@@ -34,26 +34,6 @@ If you find it useful, drop a ⭐ on the repo — it really helps the project gr
 
 ---
 
-## 🚀 Download & Run
-
-Grab the latest self-contained build for your OS from the [Releases](https://github.com/ram-ismael/VunLerDoc/releases) page — **no .NET runtime installation required**, everything needed to run is packed into the executable.
-
-* **🪟 Windows (`win-x64`)**
-  * Download and extract the Windows release asset.
-  * Double-click `VunLerDoc.exe` to run it.
-
-* **🐧 Linux (`linux-x64`)**
-  * Download and extract the Linux release asset.
-  * Grant execute permission (if needed) and run:
-    ```bash
-    chmod +x VunLerDoc
-    ./VunLerDoc
-    ```
-
-On first launch, VunLerDoc registers itself in your OS's "Open with" menu for `.pdf` files — no admin rights needed on either platform.
-
----
-
 ## ✨ Features
 
 | | |
