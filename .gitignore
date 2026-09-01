@@ -1,0 +1,9 @@
+bin/
+obj/
+.vs/
+.vscode/
+.idea/
+*.user
+*.suo
+*.nupkg
+.DS_Store

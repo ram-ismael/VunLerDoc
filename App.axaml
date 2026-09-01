@@ -1,0 +1,54 @@
+<Application xmlns="https://github.com/avaloniaui"
+             xmlns:x="http://schemas.microsoft.com/winfx/2006/xaml"
+             x:Class="VunLerDoc.App"
+             RequestedThemeVariant="Default">
+  <Application.Styles>
+    <FluentTheme />
+    <Style Selector="Window">
+      <Setter Property="Background" Value="#F5F6F8" />
+    </Style>
+    <Style Selector="Button.toolbar">
+      <Setter Property="Padding" Value="12,8" />
+      <Setter Property="MinWidth" Value="40" />
+      <Setter Property="Background" Value="Transparent" />
+      <Setter Property="BorderBrush" Value="Transparent" />
+    </Style>
+    <Style Selector="Button.toolbar:pointerover">
+      <Setter Property="Background" Value="#E7E9EE" />
+    </Style>
+
+    <!-- Dark, icon-only toolbar buttons matching the Chrome PDF-viewer look. -->
+    <Style Selector="Button.toolbar-dark">
+      <Setter Property="Padding" Value="8" />
+      <Setter Property="MinWidth" Value="36" />
+      <Setter Property="MinHeight" Value="36" />
+      <Setter Property="CornerRadius" Value="18" />
+      <Setter Property="Background" Value="Transparent" />
+      <Setter Property="BorderBrush" Value="Transparent" />
+      <Setter Property="Foreground" Value="#E8EAED" />
+    </Style>
+    <Style Selector="Button.toolbar-dark:pointerover /template/ ContentPresenter">
+      <Setter Property="Background" Value="#4A4E51" />
+    </Style>
+    <Style Selector="Button.toolbar-dark:disabled">
+      <Setter Property="Opacity" Value="0.35" />
+    </Style>
+
+    <!-- Continuous-scroll page list: an underlying ListBox used purely as a virtualized list
+         (we only need ContainerPrepared/ContainerClearing for lazy render, not selection), so
+         all selection/hover/focus chrome is stripped back to transparent. -->
+    <Style Selector="ListBox#PagesList > ListBoxItem">
+      <Setter Property="Padding" Value="0" />
+      <Setter Property="Margin" Value="0" />
+      <Setter Property="Focusable" Value="False" />
+      <Setter Property="Background" Value="Transparent" />
+      <Setter Property="CornerRadius" Value="0" />
+    </Style>
+    <Style Selector="ListBox#PagesList > ListBoxItem:pointerover /template/ ContentPresenter">
+      <Setter Property="Background" Value="Transparent" />
+    </Style>
+    <Style Selector="ListBox#PagesList > ListBoxItem:selected /template/ ContentPresenter">
+      <Setter Property="Background" Value="Transparent" />
+    </Style>
+  </Application.Styles>
+</Application>

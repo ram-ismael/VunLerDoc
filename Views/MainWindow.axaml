@@ -1,0 +1,176 @@
+<Window xmlns="https://github.com/avaloniaui"
+        xmlns:x="http://schemas.microsoft.com/winfx/2006/xaml"
+        xmlns:vm="using:VunLerDoc.ViewModels"
+        xmlns:conv="using:VunLerDoc.Converters"
+        x:Class="VunLerDoc.Views.MainWindow"
+        x:DataType="vm:MainWindowViewModel"
+        Title="{Binding Title}"
+        Icon="/Assets/logo.ico"
+        MinWidth="900"
+        MinHeight="620"
+        Width="1240"
+        Height="820"
+        Background="#525659"
+        DragDrop.AllowDrop="True">
+  <Window.Resources>
+    <conv:ByteArrayToBitmapConverter x:Key="ByteArrayToBitmapConverter" />
+    <conv:NotEmptyStringConverter x:Key="StringNotEmptyConverter" />
+    <conv:BooleanNegationConverter x:Key="BooleanNegationConverter" />
+  </Window.Resources>
+
+  <Grid RowDefinitions="52,*">
+    <!-- Toolbar: dark, icon-only, matches Chrome's built-in PDF viewer layout. -->
+    <Border Grid.Row="0" Background="#323639">
+      <Grid ColumnDefinitions="Auto,Auto,*,Auto,Auto,Auto,Auto,Auto,Auto,Auto,Auto,Auto,Auto" Margin="6,0">
+
+        <Button Grid.Column="0" Classes="toolbar-dark" Command="{Binding ToggleSidebarCommand}" ToolTip.Tip="Mostrar/ocultar miniaturas">
+          <TextBlock Text="&#9776;" FontSize="16" />
+        </Button>
+
+        <Button Grid.Column="1" Classes="toolbar-dark" Click="OpenPdfClick" ToolTip.Tip="Abrir PDF">
+          <TextBlock Text="&#128193;" FontSize="15" />
+        </Button>
+
+        <TextBlock Grid.Column="2"
+                   Text="{Binding DocumentName}"
+                   HorizontalAlignment="Center"
+                   VerticalAlignment="Center"
+                   MaxWidth="440"
+                   TextTrimming="CharacterEllipsis"
+                   Foreground="#E8EAED"
+                   FontSize="13" />
+
+        <Button Grid.Column="3" Classes="toolbar-dark" Command="{Binding PreviousPageCommand}" IsEnabled="{Binding CanGoPrevious}" ToolTip.Tip="Página anterior">
+          <TextBlock Text="&#8249;" FontSize="20" />
+        </Button>
+
+        <Border Grid.Column="4" Background="#3C4043" CornerRadius="6" Padding="8,4" VerticalAlignment="Center" MinWidth="60">
+          <TextBlock Text="{Binding PageIndicator}" Foreground="#E8EAED" FontSize="12" HorizontalAlignment="Center" />
+        </Border>
+
+        <Button Grid.Column="5" Classes="toolbar-dark" Command="{Binding NextPageCommand}" IsEnabled="{Binding CanGoNext}" ToolTip.Tip="Próxima página">
+          <TextBlock Text="&#8250;" FontSize="20" />
+        </Button>
+
+        <Button Grid.Column="6" Classes="toolbar-dark" Command="{Binding ZoomOutCommand}" IsEnabled="{Binding HasDocument}" ToolTip.Tip="Diminuir zoom" Margin="10,0,0,0">
+          <TextBlock Text="&#8722;" FontSize="16" />
+        </Button>
+
+        <Button Grid.Column="7" Classes="toolbar-dark" Command="{Binding ResetZoomCommand}" IsEnabled="{Binding HasDocument}" ToolTip.Tip="Repor zoom (100%)">
+          <TextBlock Text="{Binding ZoomLabel}" FontSize="12" MinWidth="42" HorizontalAlignment="Center" />
+        </Button>
+
+        <Button Grid.Column="8" Classes="toolbar-dark" Command="{Binding ZoomInCommand}" IsEnabled="{Binding HasDocument}" ToolTip.Tip="Aumentar zoom">
+          <TextBlock Text="&#43;" FontSize="16" />
+        </Button>
+
+        <Button Grid.Column="9" Classes="toolbar-dark" IsEnabled="{Binding HasDocument}" ToolTip.Tip="Ajustar" Margin="10,0,0,0">
+          <TextBlock Text="&#8862;" FontSize="15" />
+          <Button.Flyout>
+            <MenuFlyout Placement="BottomEdgeAlignedLeft">
+              <MenuItem Header="Ajustar à largura" Click="FitWidthClick" />
+              <MenuItem Header="Ajustar à página" Click="FitPageClick" />
+            </MenuFlyout>
+          </Button.Flyout>
+        </Button>
+
+        <Button Grid.Column="10" Classes="toolbar-dark" Command="{Binding RotateClockwiseCommand}" IsEnabled="{Binding HasDocument}" ToolTip.Tip="Rodar">
+          <TextBlock Text="&#8635;" FontSize="16" />
+        </Button>
+
+        <Button Grid.Column="11" Classes="toolbar-dark" Click="SaveAsClick" IsEnabled="{Binding HasDocument}" ToolTip.Tip="Transferir cópia">
+          <TextBlock Text="&#11015;" FontSize="15" />
+        </Button>
+
+        <Button Grid.Column="12" Classes="toolbar-dark" Command="{Binding PrintCommand}" IsEnabled="{Binding CanPrint}" ToolTip.Tip="Imprimir">
+          <TextBlock Text="&#128424;" FontSize="15" />
+        </Button>
+      </Grid>
+    </Border>
+
+    <!-- Content: optional thumbnail rail + continuous-scroll page list. -->
+    <Grid Grid.Row="1" ColumnDefinitions="Auto,*">
+
+      <Border Grid.Column="0" Background="#2B2D2F" Width="176" IsVisible="{Binding IsSidebarVisible}">
+        <ScrollViewer HorizontalScrollBarVisibility="Disabled" VerticalScrollBarVisibility="Auto">
+          <ItemsControl ItemsSource="{Binding Pages}" Margin="12">
+            <ItemsControl.ItemsPanel>
+              <ItemsPanelTemplate>
+                <StackPanel Orientation="Vertical" Spacing="14" />
+              </ItemsPanelTemplate>
+            </ItemsControl.ItemsPanel>
+            <ItemsControl.ItemTemplate>
+              <DataTemplate x:DataType="vm:PdfPageItemViewModel">
+                <StackPanel Spacing="4" HorizontalAlignment="Center" Tag="{Binding Index}" PointerPressed="ThumbnailPressed">
+                  <Border Background="White" BorderBrush="#4A4E51" BorderThickness="1" Padding="0" MaxWidth="150">
+                    <Image Source="{Binding Thumbnail, Converter={StaticResource ByteArrayToBitmapConverter}}"
+                           Stretch="Uniform" MaxWidth="148" />
+                  </Border>
+                  <TextBlock Text="{Binding PageNumber}" Foreground="#B7BABD" FontSize="11" HorizontalAlignment="Center" />
+                </StackPanel>
+              </DataTemplate>
+            </ItemsControl.ItemTemplate>
+          </ItemsControl>
+        </ScrollViewer>
+      </Border>
+
+      <Grid Grid.Column="1" Background="#525659">
+        <ScrollViewer Name="PageScrollViewer"
+                      HorizontalScrollBarVisibility="Auto"
+                      VerticalScrollBarVisibility="Auto"
+                      ScrollChanged="PageScrollViewerScrollChanged"
+                      PointerWheelChanged="PageScrollViewerPointerWheelChanged"
+                      IsVisible="{Binding HasDocument}">
+          <ListBox Name="PagesList"
+                    ItemsSource="{Binding Pages}"
+                    Background="Transparent"
+                    Padding="0,28"
+                    HorizontalAlignment="Center"
+                    SelectionMode="Single"
+                    ContainerPrepared="PagesListContainerPrepared"
+                    ContainerClearing="PagesListContainerClearing">
+            <ListBox.ItemsPanel>
+              <ItemsPanelTemplate>
+                <VirtualizingStackPanel Orientation="Vertical" />
+              </ItemsPanelTemplate>
+            </ListBox.ItemsPanel>
+            <ListBox.ItemTemplate>
+              <DataTemplate x:DataType="vm:PdfPageItemViewModel">
+                <Border Background="White"
+                        BoxShadow="0 6 18 0 #33000000"
+                        Width="{Binding DisplayWidth}"
+                        Height="{Binding DisplayHeight}"
+                        Margin="0,0,0,16">
+                  <Panel>
+                    <Image Source="{Binding DisplayImage, Converter={StaticResource ByteArrayToBitmapConverter}}"
+                           Stretch="Fill"
+                           RenderOptions.BitmapInterpolationMode="HighQuality" />
+                    <Border IsVisible="{Binding IsRendering}"
+                            Background="#18000000"
+                            HorizontalAlignment="Right" VerticalAlignment="Bottom" Margin="8">
+                      <TextBlock Text="…" Foreground="#666" FontSize="14" Margin="6,2" />
+                    </Border>
+                  </Panel>
+                </Border>
+              </DataTemplate>
+            </ListBox.ItemTemplate>
+          </ListBox>
+        </ScrollViewer>
+
+        <StackPanel IsVisible="{Binding HasDocument, Converter={StaticResource BooleanNegationConverter}}" HorizontalAlignment="Center" VerticalAlignment="Center" Margin="90">
+          <TextBlock Text="VunLerDoc" FontSize="30" FontWeight="SemiBold" HorizontalAlignment="Center" Foreground="White" />
+          <TextBlock Text="Abra um ficheiro PDF para começar" Margin="0,10,0,0" FontSize="15" Foreground="#C6C9CC" HorizontalAlignment="Center" />
+          <Button Content="Abrir PDF" Click="OpenPdfClick" HorizontalAlignment="Center" Margin="0,24,0,0" Padding="24,11" />
+        </StackPanel>
+
+        <Border Background="#B0101418" CornerRadius="10" Padding="16,10" HorizontalAlignment="Center" VerticalAlignment="Top" Margin="0,12" IsVisible="{Binding IsBusy}">
+          <TextBlock Text="A processar…" Foreground="White" />
+        </Border>
+
+        <Border Background="#FFF0F0" BorderBrush="#F3C3C3" BorderThickness="1" CornerRadius="8" Padding="12" HorizontalAlignment="Center" VerticalAlignment="Bottom" Margin="0,0,0,20" IsVisible="{Binding ErrorText, Converter={StaticResource StringNotEmptyConverter}}">
+          <TextBlock Text="{Binding ErrorText}" Foreground="#9A2E2E" MaxWidth="700" TextWrapping="Wrap" />
+        </Border>
+      </Grid>
+    </Grid>
+  </Grid>
+</Window>
