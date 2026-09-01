@@ -54,7 +54,6 @@ If you find it useful, drop a ⭐ on the repo — it really helps the project gr
 ## 🛠️ Tech Stack
 
 * **Language**: C# / .NET 10
-* **UI Framework**: [Avalonia UI](https://avaloniaui.net/) 12 (cross-platform XAML)
 * **Architecture**: MVVM, via CommunityToolkit.Mvvm
 * **PDF rendering**: [PDFium](https://pdfium.googlesource.com/pdfium/) (Google's PDF engine), via the PDFiumZ NuGet package
 * **Imaging**: SkiaSharp
