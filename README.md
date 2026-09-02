@@ -1,5 +1,5 @@
 <p align="center">
-  <img src="docs/logo.png" alt="VunLerDoc Logo" width="140" height="140" />
+  <img src="docs/logo.png?v=2" alt="VunLerDoc Logo" width="140" height="140" />
 </p>
 
 <h1 align="center">VunLerDoc 📄</h1>
