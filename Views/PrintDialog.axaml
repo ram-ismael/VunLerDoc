@@ -1,0 +1,108 @@
+<Window xmlns="https://github.com/avaloniaui"
+        xmlns:x="http://schemas.microsoft.com/winfx/2006/xaml"
+        xmlns:materialIcons="clr-namespace:Material.Icons.Avalonia;assembly=Material.Icons.Avalonia"
+        x:Class="VunLerDoc.Views.PrintDialog"
+        Title="Imprimir"
+        Width="460"
+        Height="400"
+        CanResize="False"
+        WindowStartupLocation="CenterOwner"
+        Background="#2D2F31"
+        Foreground="#E8EAED">
+
+  <Window.Styles>
+    <Style Selector="TextBlock">
+      <Setter Property="Foreground" Value="#E8EAED"/>
+    </Style>
+    <Style Selector="CheckBox">
+      <Setter Property="Foreground" Value="#E8EAED"/>
+    </Style>
+    <Style Selector="ComboBox">
+      <Setter Property="Background" Value="#3C4043"/>
+      <Setter Property="Foreground" Value="#E8EAED"/>
+      <Setter Property="BorderBrush" Value="#5A5E63"/>
+      <Setter Property="CornerRadius" Value="6"/>
+      <Setter Property="Padding" Value="10,6"/>
+    </Style>
+    <Style Selector="NumericUpDown">
+      <Setter Property="Background" Value="#3C4043"/>
+      <Setter Property="Foreground" Value="#E8EAED"/>
+      <Setter Property="BorderBrush" Value="#5A5E63"/>
+      <Setter Property="CornerRadius" Value="6"/>
+    </Style>
+    <Style Selector="Button.dialog-btn">
+      <Setter Property="Background" Value="#3C4043"/>
+      <Setter Property="Foreground" Value="#E8EAED"/>
+      <Setter Property="BorderBrush" Value="#5A5E63"/>
+      <Setter Property="CornerRadius" Value="6"/>
+      <Setter Property="Padding" Value="16,10"/>
+      <Setter Property="FontSize" Value="13"/>
+    </Style>
+    <Style Selector="Button.dialog-btn:pointerover /template/ ContentPresenter">
+      <Setter Property="Background" Value="#4A4E51"/>
+    </Style>
+    <Style Selector="Button.primary">
+      <Setter Property="Background" Value="#8AB4F8"/>
+      <Setter Property="Foreground" Value="#202124"/>
+      <Setter Property="BorderBrush" Value="#8AB4F8"/>
+    </Style>
+    <Style Selector="Button.primary:pointerover /template/ ContentPresenter">
+      <Setter Property="Background" Value="#AECBFA"/>
+      <Setter Property="BorderBrush" Value="#AECBFA"/>
+    </Style>
+  </Window.Styles>
+
+  <Grid Margin="28" RowDefinitions="Auto,Auto,Auto,Auto,Auto,Auto,*,Auto">
+    <!-- Header -->
+    <StackPanel Grid.Row="0" Orientation="Horizontal" Spacing="12" Margin="0,0,0,24">
+      <materialIcons:MaterialIcon Kind="PrinterOutline" Width="26" Height="26" Foreground="#8AB4F8"/>
+      <TextBlock Text="Configurações de Impressão" 
+                 FontSize="17" 
+                 FontWeight="SemiBold" 
+                 VerticalAlignment="Center"/>
+    </StackPanel>
+
+    <!-- Impressora -->
+    <TextBlock Grid.Row="1" Text="Impressora:" FontSize="13" Margin="0,0,0,6" Opacity="0.85"/>
+    <ComboBox x:Name="PrinterCombo" 
+              Grid.Row="2" 
+              Margin="0,0,0,20" 
+              HorizontalAlignment="Stretch" 
+              Height="40"/>
+
+    <!-- Cópias -->
+    <TextBlock Grid.Row="3" Text="Cópias:" FontSize="13" Margin="0,0,0,6" Opacity="0.85"/>
+    <NumericUpDown x:Name="CopiesUpDown" 
+                   Grid.Row="4" 
+                   Minimum="1" 
+                   Maximum="99" 
+                   Value="1" 
+                   Margin="0,0,0,18" 
+                   HorizontalAlignment="Left" 
+                   Width="110" 
+                   Height="36"/>
+
+    <!-- Orientação -->
+    <CheckBox x:Name="LandscapeCheck" 
+              Content="Orientação paisagem" 
+              Grid.Row="5" 
+              Margin="0,4,0,0"/>
+
+    <!-- Botões -->
+    <StackPanel Grid.Row="7" 
+                Orientation="Horizontal" 
+                HorizontalAlignment="Right" 
+                Spacing="12" 
+                Margin="0,20,0,0">
+      <Button Content="Cancelar" 
+              Click="CancelClick" 
+              Classes="dialog-btn" 
+              Width="110"/>
+      <Button Content="Imprimir" 
+              Click="PrintClick" 
+              Classes="dialog-btn primary" 
+              Width="110" 
+              IsDefault="True"/>
+    </StackPanel>
+  </Grid>
+</Window>

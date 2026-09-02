@@ -19,6 +19,7 @@
 </p>
 
 <p align="center">
+  <a href="#-screenshots">Screenshots</a> ·
   <a href="#-download--run">Download</a> ·
   <a href="#-features">Features</a> ·
   <a href="#-tech-stack">Tech Stack</a> ·
@@ -31,6 +32,42 @@
 Most PDF readers are either a browser tab away from your data, or a bloated installer full of things you didn't ask for. **VunLerDoc** is neither: a small, native, 100% offline desktop app that opens a PDF and gets out of your way — continuous smooth scrolling, real re-rasterized zoom instead of a blurry stretched image, and native printing on both Windows and Linux.
 
 If you find it useful, drop a ⭐ on the repo — it really helps the project grow!
+
+---
+
+## 📸 Screenshots
+
+<p align="center">
+  <img src="docs/screen_1.png" width="49%" alt="VunLerDoc screenshot 1" />
+  <img src="docs/screen_2.png" width="49%" alt="VunLerDoc screenshot 2" />
+</p>
+<p align="center">
+  <img src="docs/screen_3.png" width="49%" alt="VunLerDoc screenshot 3" />
+  <img src="docs/screen_4.png" width="49%" alt="VunLerDoc screenshot 4" />
+</p>
+<p align="center">
+  <img src="docs/screen_5.png" width="49%" alt="VunLerDoc screenshot 5" />
+</p>
+
+---
+
+## 🚀 Download & Run
+
+Grab the latest self-contained build for your OS from the [Releases](https://github.com/ram-ismael/VunLerDoc/releases) page — **no .NET runtime installation required**, everything needed to run is packed into the executable.
+
+* **🪟 Windows (`win-x64`)**
+  * Download and extract the Windows release asset.
+  * Double-click `VunLerDoc.exe` to run it.
+
+* **🐧 Linux (`linux-x64`)**
+  * Download and extract the Linux release asset.
+  * Grant execute permission (if needed) and run:
+    ```bash
+    chmod +x VunLerDoc
+    ./VunLerDoc
+    ```
+
+On first launch, VunLerDoc registers itself in your OS's "Open with" menu for `.pdf` files — no admin rights needed on either platform.
 
 ---
 

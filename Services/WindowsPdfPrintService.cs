@@ -4,68 +4,109 @@ using System.Runtime.Versioning;
 
 namespace VunLerDoc.Services;
 
-/// <summary>
-/// Printing via System.Drawing.Printing (Windows print spooler). Every page is rendered
-/// natively through pdfium at print resolution (300 DPI) — not scaled up from the on-screen
-/// preview bitmap — before the print job starts, so print output quality is independent of
-/// whatever zoom level the document happened to be at on screen.
-///
-/// This currently prints straight to the default printer. Swapping in a printer/page-range
-/// picker means either a small custom Avalonia dialog listing
-/// <see cref="PrinterSettings.InstalledPrinters"/>, or (Windows-only build) a
-/// System.Windows.Forms.PrintDialog — the latter needs the project to multi-target
-/// `net10.0-windows` with UseWindowsForms, which this project intentionally avoids to keep a
-/// single cross-platform TargetFramework.
-/// </summary>
 [SupportedOSPlatform("windows")]
 public sealed class WindowsPdfPrintService : IPdfPrintService
 {
     private const float PrintDpi = 300f;
 
-    public async Task PrintAsync(IPdfDocumentService document, int pageCount, string documentName, CancellationToken cancellationToken = default)
+    public async Task PrintAsync(
+        IPdfDocumentService document,
+        int pageCount,
+        string documentName,
+        PrintOptions? options = null,
+        CancellationToken cancellationToken = default)
     {
         if (!OperatingSystem.IsWindows())
-            throw new PlatformNotSupportedException("A impressão está disponível apenas no Windows nesta versão.");
+            throw new PlatformNotSupportedException("A impressão está disponível apenas no Windows.");
 
         if (pageCount <= 0)
-            return;
+            throw new InvalidOperationException("O documento não contém páginas para imprimir.");
 
-        // Pre-render every page before handing control to the print pipeline: PrintPage fires
-        // synchronously per page and shouldn't block on async pdfium calls.
-        var renderedPages = new byte[pageCount][];
-        for (var i = 0; i < pageCount; i++)
+        if (PrinterSettings.InstalledPrinters.Count == 0)
+            throw new InvalidOperationException("Nenhuma impressora instalada foi encontrada no sistema.");
+
+        cancellationToken.ThrowIfCancellationRequested();
+
+        var printerName = options?.PrinterName;
+        if (string.IsNullOrWhiteSpace(printerName) ||
+            !PrinterSettings.InstalledPrinters.Cast<string>().Contains(printerName))
         {
-            cancellationToken.ThrowIfCancellationRequested();
-            renderedPages[i] = await document.RenderPageAsync(i, PrintDpi, rotationDegrees: 0, cancellationToken);
+            var defaultSettings = new PrinterSettings();
+            printerName = defaultSettings.PrinterName;
         }
 
-        var printDocument = new PrintDocument { DocumentName = documentName };
-        var pageIndex = 0;
+        var printDocument = new PrintDocument
+        {
+            DocumentName = documentName,
+            PrinterSettings = new PrinterSettings { PrinterName = printerName! },
+            PrintController = new StandardPrintController()
+        };
+
+        if (options?.Copies > 1)
+            printDocument.PrinterSettings.Copies = (short)Math.Min(options.Copies, 99);
+
+        if (options?.Landscape == true)
+            printDocument.DefaultPageSettings.Landscape = true;
+
+        int pageIndex = 0;
+        Exception? capturedException = null;
+
+        printDocument.BeginPrint += (_, _) => { pageIndex = 0; };
 
         printDocument.PrintPage += (_, e) =>
         {
-            if (pageIndex >= renderedPages.Length || e.Graphics is null)
+            if (pageIndex >= pageCount || cancellationToken.IsCancellationRequested)
             {
                 e.HasMorePages = false;
                 return;
             }
 
-            using var stream = new MemoryStream(renderedPages[pageIndex]);
-            using var image = Image.FromStream(stream);
+            try
+            {
+                var bytes = Task.Run(async () =>
+                    await document.RenderPageAsync(pageIndex, PrintDpi, rotationDegrees: 0, cancellationToken))
+                    .GetAwaiter().GetResult();
 
-            var bounds = e.MarginBounds;
-            var scale = Math.Min(bounds.Width / (float)image.Width, bounds.Height / (float)image.Height);
-            var drawWidth = image.Width * scale;
-            var drawHeight = image.Height * scale;
-            var x = bounds.X + (bounds.Width - drawWidth) / 2f;
-            var y = bounds.Y + (bounds.Height - drawHeight) / 2f;
+                using var stream = new MemoryStream(bytes);
+                using var image = Image.FromStream(stream);
 
-            e.Graphics.DrawImage(image, x, y, drawWidth, drawHeight);
+                var bounds = e.MarginBounds;
+                if (bounds.Width <= 0 || bounds.Height <= 0)
+                    bounds = e.PageBounds;
 
-            pageIndex++;
-            e.HasMorePages = pageIndex < renderedPages.Length;
+                var pageScale = Math.Min(
+                    bounds.Width / (float)image.Width,
+                    bounds.Height / (float)image.Height);
+
+                var drawW = image.Width * pageScale;
+                var drawH = image.Height * pageScale;
+                var x = bounds.X + (bounds.Width - drawW) / 2f;
+                var y = bounds.Y + (bounds.Height - drawH) / 2f;
+
+                e.Graphics!.DrawImage(image, x, y, drawW, drawH);
+
+                pageIndex++;
+                e.HasMorePages = pageIndex < pageCount;
+            }
+            catch (Exception ex)
+            {
+                capturedException = ex;
+                e.HasMorePages = false;
+                e.Cancel = true;
+            }
         };
 
-        printDocument.Print();
+        await Task.Run(() =>
+        {
+            cancellationToken.ThrowIfCancellationRequested();
+            printDocument.Print();
+        }, cancellationToken);
+
+        if (capturedException is not null)
+        {
+            throw new InvalidOperationException(
+                $"Erro ao imprimir a página {pageIndex + 1}: {capturedException.Message}",
+                capturedException);
+        }
     }
 }

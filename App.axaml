@@ -1,9 +1,12 @@
 <Application xmlns="https://github.com/avaloniaui"
              xmlns:x="http://schemas.microsoft.com/winfx/2006/xaml"
+             xmlns:materialIcons="clr-namespace:Material.Icons.Avalonia;assembly=Material.Icons.Avalonia"
              x:Class="VunLerDoc.App"
              RequestedThemeVariant="Default">
   <Application.Styles>
     <FluentTheme />
+    <materialIcons:MaterialIconStyles />
+
     <Style Selector="Window">
       <Setter Property="Background" Value="#F5F6F8" />
     </Style>
@@ -34,9 +37,7 @@
       <Setter Property="Opacity" Value="0.35" />
     </Style>
 
-    <!-- Continuous-scroll page list: an underlying ListBox used purely as a virtualized list
-         (we only need ContainerPrepared/ContainerClearing for lazy render, not selection), so
-         all selection/hover/focus chrome is stripped back to transparent. -->
+    <!-- Continuous-scroll page list -->
     <Style Selector="ListBox#PagesList > ListBoxItem">
       <Setter Property="Padding" Value="0" />
       <Setter Property="Margin" Value="0" />

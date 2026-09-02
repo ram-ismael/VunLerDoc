@@ -5,6 +5,7 @@ using Avalonia.Controls;
 using Avalonia.Input;
 using Avalonia.Interactivity;
 using Avalonia.Platform.Storage;
+using VunLerDoc.Services;
 using VunLerDoc.ViewModels;
 
 namespace VunLerDoc.Views;
@@ -18,7 +19,10 @@ public partial class MainWindow : Window
         DataContextChanged += (_, _) =>
         {
             if (DataContext is MainWindowViewModel vm)
+            {
                 vm.ScrollToPageRequested += OnScrollToPageRequested;
+                vm.PrintDialogRequested += OnPrintDialogRequested;
+            }
         };
 
         Opened += (_, _) =>
@@ -36,6 +40,13 @@ public partial class MainWindow : Window
         if (DataContext is not MainWindowViewModel vm) return;
         if (index < 0 || index >= vm.Pages.Count) return;
         PagesList.ScrollIntoView(vm.Pages[index]);
+    }
+
+    private async void OnPrintDialogRequested(object? sender, TaskCompletionSource<PrintOptions?> tcs)
+    {
+        var dialog = new PrintDialog();
+        await dialog.ShowDialog(this);
+        tcs.TrySetResult(dialog.IsCancelled ? null : dialog.Result);
     }
 
     private async void OpenPdfClick(object? sender, RoutedEventArgs e)
