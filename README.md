@@ -45,6 +45,9 @@ If you find it useful, drop a ⭐ on the repo — it really helps the project gr
   <img src="docs/screen_3.png" width="49%" alt="VunLerDoc screenshot 3" />
   <img src="docs/screen_4.png" width="49%" alt="VunLerDoc screenshot 4" />
 </p>
+<p align="center">
+  <img src="docs/screen_5.png" width="49%" alt="VunLerDoc screenshot 5" />
+</p>
 
 ---
 
