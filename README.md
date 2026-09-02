@@ -53,14 +53,14 @@ If you find it useful, drop a ⭐ on the repo — it really helps the project gr
 
 ## 🚀 Download & Run
 
-Grab the latest self-contained build for your OS from the [Releases](https://github.com/ram-ismael/VunLerDoc/releases) page — **no .NET runtime installation required**, everything needed to run is packed into the executable.
+Head to the `publish/` folder, grab the zip for your OS, extract it, and launch the app. You'll find them in the repository or in the [Releases](https://github.com/ram-ismael/VunLerDoc/releases) page — **no .NET runtime installation required**, everything needed to run is packed into the executable.
 
 * **🪟 Windows (`win-x64`)**
-  * Download and extract the Windows release asset.
-  * Double-click `VunLerDoc.exe` to run it.
+  * Download and extract `publish/win-x64.zip`.
+  * Double-click `VunLerDoc.exe` to run it immediately.
 
 * **🐧 Linux (`linux-x64`)**
-  * Download and extract the Linux release asset.
+  * Download and extract `publish/linux-x64.zip`.
   * Grant execute permission (if needed) and run:
     ```bash
     chmod +x VunLerDoc
@@ -110,6 +110,7 @@ VunLerDoc/
 ├── ViewModels/           # MainWindowViewModel, PdfPageItemViewModel
 ├── Views/                # MainWindow.axaml (UI)
 ├── Scripts/              # publish-windows.sh, publish-linux.sh
+├── publish/              # Generated self-contained build zips (win-x64.zip, linux-x64.zip)
 ├── Program.cs
 ├── App.axaml
 └── VunLerDoc.csproj
@@ -146,6 +147,7 @@ Requires the **.NET 10 SDK**.
    # Linux x64
    ./Scripts/publish-linux.sh
    ```
+   Each script drops a ready-to-share zip into `publish/` (`win-x64.zip` / `linux-x64.zip`).
 
 ---
 
