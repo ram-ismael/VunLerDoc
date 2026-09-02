@@ -2,6 +2,7 @@
         xmlns:x="http://schemas.microsoft.com/winfx/2006/xaml"
         xmlns:vm="using:VunLerDoc.ViewModels"
         xmlns:conv="using:VunLerDoc.Converters"
+        xmlns:materialIcons="clr-namespace:Material.Icons.Avalonia;assembly=Material.Icons.Avalonia"
         x:Class="VunLerDoc.Views.MainWindow"
         x:DataType="vm:MainWindowViewModel"
         Title="{Binding Title}"
@@ -24,11 +25,11 @@
       <Grid ColumnDefinitions="Auto,Auto,*,Auto,Auto,Auto,Auto,Auto,Auto,Auto,Auto,Auto,Auto" Margin="6,0">
 
         <Button Grid.Column="0" Classes="toolbar-dark" Command="{Binding ToggleSidebarCommand}" ToolTip.Tip="Mostrar/ocultar miniaturas">
-          <TextBlock Text="&#9776;" FontSize="16" />
+          <materialIcons:MaterialIcon Kind="Menu" Width="20" Height="20" />
         </Button>
 
         <Button Grid.Column="1" Classes="toolbar-dark" Click="OpenPdfClick" ToolTip.Tip="Abrir PDF">
-          <TextBlock Text="&#128193;" FontSize="15" />
+          <materialIcons:MaterialIcon Kind="FolderOpenOutline" Width="20" Height="20" />
         </Button>
 
         <TextBlock Grid.Column="2"
@@ -41,7 +42,7 @@
                    FontSize="13" />
 
         <Button Grid.Column="3" Classes="toolbar-dark" Command="{Binding PreviousPageCommand}" IsEnabled="{Binding CanGoPrevious}" ToolTip.Tip="Página anterior">
-          <TextBlock Text="&#8249;" FontSize="20" />
+          <materialIcons:MaterialIcon Kind="ChevronLeft" Width="22" Height="22" />
         </Button>
 
         <Border Grid.Column="4" Background="#3C4043" CornerRadius="6" Padding="8,4" VerticalAlignment="Center" MinWidth="60">
@@ -49,11 +50,11 @@
         </Border>
 
         <Button Grid.Column="5" Classes="toolbar-dark" Command="{Binding NextPageCommand}" IsEnabled="{Binding CanGoNext}" ToolTip.Tip="Próxima página">
-          <TextBlock Text="&#8250;" FontSize="20" />
+          <materialIcons:MaterialIcon Kind="ChevronRight" Width="22" Height="22" />
         </Button>
 
         <Button Grid.Column="6" Classes="toolbar-dark" Command="{Binding ZoomOutCommand}" IsEnabled="{Binding HasDocument}" ToolTip.Tip="Diminuir zoom" Margin="10,0,0,0">
-          <TextBlock Text="&#8722;" FontSize="16" />
+          <materialIcons:MaterialIcon Kind="MagnifyMinusOutline" Width="20" Height="20" />
         </Button>
 
         <Button Grid.Column="7" Classes="toolbar-dark" Command="{Binding ResetZoomCommand}" IsEnabled="{Binding HasDocument}" ToolTip.Tip="Repor zoom (100%)">
@@ -61,11 +62,11 @@
         </Button>
 
         <Button Grid.Column="8" Classes="toolbar-dark" Command="{Binding ZoomInCommand}" IsEnabled="{Binding HasDocument}" ToolTip.Tip="Aumentar zoom">
-          <TextBlock Text="&#43;" FontSize="16" />
+          <materialIcons:MaterialIcon Kind="MagnifyPlusOutline" Width="20" Height="20" />
         </Button>
 
         <Button Grid.Column="9" Classes="toolbar-dark" IsEnabled="{Binding HasDocument}" ToolTip.Tip="Ajustar" Margin="10,0,0,0">
-          <TextBlock Text="&#8862;" FontSize="15" />
+          <materialIcons:MaterialIcon Kind="FitToPageOutline" Width="20" Height="20" />
           <Button.Flyout>
             <MenuFlyout Placement="BottomEdgeAlignedLeft">
               <MenuItem Header="Ajustar à largura" Click="FitWidthClick" />
@@ -75,15 +76,15 @@
         </Button>
 
         <Button Grid.Column="10" Classes="toolbar-dark" Command="{Binding RotateClockwiseCommand}" IsEnabled="{Binding HasDocument}" ToolTip.Tip="Rodar">
-          <TextBlock Text="&#8635;" FontSize="16" />
+          <materialIcons:MaterialIcon Kind="RotateRight" Width="20" Height="20" />
         </Button>
 
         <Button Grid.Column="11" Classes="toolbar-dark" Click="SaveAsClick" IsEnabled="{Binding HasDocument}" ToolTip.Tip="Transferir cópia">
-          <TextBlock Text="&#11015;" FontSize="15" />
+          <materialIcons:MaterialIcon Kind="DownloadOutline" Width="20" Height="20" />
         </Button>
 
         <Button Grid.Column="12" Classes="toolbar-dark" Command="{Binding PrintCommand}" IsEnabled="{Binding CanPrint}" ToolTip.Tip="Imprimir">
-          <TextBlock Text="&#128424;" FontSize="15" />
+          <materialIcons:MaterialIcon Kind="PrinterOutline" Width="20" Height="20" />
         </Button>
       </Grid>
     </Border>

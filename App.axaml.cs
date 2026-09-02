@@ -40,12 +40,19 @@ public partial class App : Application
         base.OnFrameworkInitializationCompleted();
     }
 
-    /// <summary>Picks the print backend for the current OS. Returns null on platforms without
-    /// one yet (macOS) — MainWindowViewModel already disables the Print button in that case.</summary>
+    /// <summary>
+    /// Picks the print backend for the current OS.
+    /// Windows uses System.Drawing.Printing; Linux and macOS use CUPS (lp/lpr).
+    /// Returns null on platforms without a known backend.
+    /// </summary>
     private static IPdfPrintService? CreatePrintService()
     {
-        if (OperatingSystem.IsWindows()) return new WindowsPdfPrintService();
-        if (OperatingSystem.IsLinux()) return new LinuxPdfPrintService();
+        if (OperatingSystem.IsWindows())
+            return new WindowsPdfPrintService();
+
+        if (OperatingSystem.IsLinux() || OperatingSystem.IsMacOS())
+            return new LinuxPdfPrintService();
+
         return null;
     }
 
@@ -61,6 +68,7 @@ public partial class App : Application
                 new WindowsFileAssociationService().EnsureRegistered();
             else if (OperatingSystem.IsLinux())
                 new LinuxFileAssociationService().EnsureRegistered();
+            // macOS file associations are handled via Info.plist; no runtime registration needed.
         });
     }
 }

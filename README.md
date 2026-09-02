@@ -19,6 +19,7 @@
 </p>
 
 <p align="center">
+  <a href="#-screenshots">Screenshots</a> ·
   <a href="#-download--run">Download</a> ·
   <a href="#-features">Features</a> ·
   <a href="#-tech-stack">Tech Stack</a> ·
@@ -31,6 +32,19 @@
 Most PDF readers are either a browser tab away from your data, or a bloated installer full of things you didn't ask for. **VunLerDoc** is neither: a small, native, 100% offline desktop app that opens a PDF and gets out of your way — continuous smooth scrolling, real re-rasterized zoom instead of a blurry stretched image, and native printing on both Windows and Linux.
 
 If you find it useful, drop a ⭐ on the repo — it really helps the project grow!
+
+---
+
+## 📸 Screenshots
+
+<p align="center">
+  <img src="docs/screen_1.png" width="49%" alt="VunLerDoc screenshot 1" />
+  <img src="docs/screen_2.png" width="49%" alt="VunLerDoc screenshot 2" />
+</p>
+<p align="center">
+  <img src="docs/screen_3.png" width="49%" alt="VunLerDoc screenshot 3" />
+  <img src="docs/screen_4.png" width="49%" alt="VunLerDoc screenshot 4" />
+</p>
 
 ---
 

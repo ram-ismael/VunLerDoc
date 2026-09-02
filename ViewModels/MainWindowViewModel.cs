@@ -11,21 +11,22 @@ public partial class MainWindowViewModel : ObservableObject
     private const double MinZoom = 0.25;
     private const double MaxZoom = 4.0;
     private const double ZoomStep = 0.10;
-    private const int ItemSpacing = 16; // must match the spacing used by the page list panel in XAML
+    private const int ItemSpacing = 16;
+
+    /// <summary>Base DPI used for "100 %". 120 instead of 96 makes the default view ~25 % larger.</summary>
+    private const double BaseDpi = 120.0;
 
     private readonly IPdfDocumentService _pdfService;
     private readonly IPdfPrintService? _printService;
 
-    // Pages currently realized by the virtualizing list (kept in sync by the view via
-    // NotifyPagePrepared/NotifyPageCleared). Used to know which pages to re-render after a
-    // zoom change settles, without touching pages that are scrolled far away.
+    public event EventHandler<TaskCompletionSource<PrintOptions?>>? PrintDialogRequested;
+
     private readonly HashSet<int> _preparedIndices = new();
     private readonly Dictionary<int, CancellationTokenSource> _renderTokens = new();
 
     private CancellationTokenSource? _thumbnailPassCts;
     private CancellationTokenSource? _zoomDebounceCts;
 
-    /// <summary>Raised when the view should scroll the page list to bring an index into view.</summary>
     public event EventHandler<int>? ScrollToPageRequested;
 
     [ObservableProperty] private string _title = "VunLerDoc";
@@ -42,9 +43,6 @@ public partial class MainWindowViewModel : ObservableObject
     [ObservableProperty] private string _statusText = "Abra um ficheiro PDF para começar.";
     [ObservableProperty] private string _errorText = string.Empty;
 
-    /// <summary>Render resolution multiplier for the current display (set by the view from
-    /// TopLevel.RenderScaling) so full-resolution pages are rasterized at physical-pixel
-    /// density, not just DIP density — this is what keeps text sharp on HiDPI screens.</summary>
     public double RenderScaling { get; set; } = 1.0;
 
     public ObservableCollection<PdfPageItemViewModel> Pages { get; } = new();
@@ -68,13 +66,14 @@ public partial class MainWindowViewModel : ObservableObject
         OnPropertyChanged(nameof(CanGoPrevious));
         OnPropertyChanged(nameof(CanGoNext));
         OnPropertyChanged(nameof(CanPrint));
+        PrintCommand?.NotifyCanExecuteChanged();
     }
 
     partial void OnZoomChanged(double value)
     {
         ZoomLabel = $"{value:P0}";
         foreach (var page in Pages)
-            page.UpdateLayout(value, RotationDegrees);
+            page.UpdateLayout(value, RotationDegrees, BaseDpi);
 
         DebounceRerenderPreparedPages();
     }
@@ -82,7 +81,7 @@ public partial class MainWindowViewModel : ObservableObject
     partial void OnRotationDegreesChanged(int value)
     {
         foreach (var page in Pages)
-            page.UpdateLayout(Zoom, value);
+            page.UpdateLayout(Zoom, value, BaseDpi);
         DebounceRerenderPreparedPages();
     }
 
@@ -90,6 +89,7 @@ public partial class MainWindowViewModel : ObservableObject
     {
         _pdfService = pdfService;
         _printService = printService;
+        PrintCommand?.NotifyCanExecuteChanged();
     }
 
     public async Task OpenPdfAsync(string path)
@@ -113,7 +113,7 @@ public partial class MainWindowViewModel : ObservableObject
             for (var i = 0; i < count; i++)
             {
                 var item = new PdfPageItemViewModel(i);
-                item.UpdateLayout(Zoom, RotationDegrees);
+                item.UpdateLayout(Zoom, RotationDegrees, BaseDpi);
                 Pages.Add(item);
             }
 
@@ -138,12 +138,10 @@ public partial class MainWindowViewModel : ObservableObject
         finally
         {
             IsBusy = false;
+            PrintCommand?.NotifyCanExecuteChanged();
         }
     }
 
-    /// <summary>Generates thumbnails/native sizes for every page, in order, in the background.
-    /// Runs sequentially — the pdfium service itself serializes access, so extra concurrency
-    /// here wouldn't speed things up, only add overhead.</summary>
     private async Task RunThumbnailPassAsync(CancellationToken token)
     {
         const int thumbnailMaxDimension = 220;
@@ -157,17 +155,12 @@ public partial class MainWindowViewModel : ObservableObject
                 var result = await _pdfService.RenderThumbnailAsync(page.Index, thumbnailMaxDimension, token);
                 if (token.IsCancellationRequested) return;
 
-                // The service re-renders at an adjusted dpi internally when downscaling is
-                // needed; either way the returned pixel size and the dpi it was produced at
-                // are consistent, so back-compute the effective dpi from what we know we asked
-                // for versus what we probed — simplest correct anchor is the probe dpi when no
-                // second pass was needed, otherwise infer from pixel size directly.
                 var effectiveDpi = Math.Max(result.PixelWidth, result.PixelHeight) >= thumbnailMaxDimension
                     ? probeDpi * (thumbnailMaxDimension / (float)Math.Max(result.PixelWidth, result.PixelHeight))
                     : probeDpi;
 
                 page.SetNativeSize(result.PixelWidth, result.PixelHeight, effectiveDpi);
-                page.UpdateLayout(Zoom, RotationDegrees);
+                page.UpdateLayout(Zoom, RotationDegrees, BaseDpi);
                 page.Thumbnail = result.Bytes;
             }
             catch (OperationCanceledException)
@@ -181,7 +174,6 @@ public partial class MainWindowViewModel : ObservableObject
         }
     }
 
-    /// <summary>Called by the view when a page's container is realized (on/near screen).</summary>
     public void NotifyPagePrepared(int index)
     {
         if (index < 0 || index >= Pages.Count) return;
@@ -189,7 +181,6 @@ public partial class MainWindowViewModel : ObservableObject
         _ = RequestPageRenderAsync(index);
     }
 
-    /// <summary>Called by the view when a page's container is recycled (scrolled far away).</summary>
     public void NotifyPageCleared(int index)
     {
         if (index < 0 || index >= Pages.Count) return;
@@ -202,7 +193,6 @@ public partial class MainWindowViewModel : ObservableObject
             _renderTokens.Remove(index);
         }
 
-        // Drop the full-resolution bitmap to keep memory bounded; the cheap thumbnail stays.
         Pages[index].FullImage = null;
     }
 
@@ -223,7 +213,7 @@ public partial class MainWindowViewModel : ObservableObject
         page.IsRendering = true;
         try
         {
-            var dpi = (float)(96.0 * Zoom * Math.Max(1.0, RenderScaling));
+            var dpi = (float)(BaseDpi * Zoom * Math.Max(1.0, RenderScaling));
             var bytes = await _pdfService.RenderPageAsync(index, dpi, RotationDegrees, token);
             if (token.IsCancellationRequested) return;
             page.FullImage = bytes;
@@ -282,8 +272,6 @@ public partial class MainWindowViewModel : ObservableObject
         _zoomDebounceCts?.Cancel();
     }
 
-    /// <summary>Updates CurrentPage from the page list's scroll offset, using each page's
-    /// exact known layout height — accurate without needing any extra virtualization APIs.</summary>
     public void UpdateCurrentPageFromScrollOffset(double verticalOffset)
     {
         if (Pages.Count == 0) return;
@@ -338,15 +326,13 @@ public partial class MainWindowViewModel : ObservableObject
     [RelayCommand]
     private void ResetZoom() => Zoom = 1.0;
 
-    /// <summary>Fits the widest page to the given viewport width (called by the view, which
-    /// owns the actual pixel measurements of the scroll viewport).</summary>
     public void SetZoomToFitWidth(double viewportWidth, double horizontalPadding = 64)
     {
         if (!HasDocument) return;
         var widest = Pages.Max(p => p.NativeWidthPoints);
         if (widest <= 0) return;
         var usable = Math.Max(100, viewportWidth - horizontalPadding);
-        Zoom = Math.Clamp(usable / (widest / 72.0 * 96.0), MinZoom, MaxZoom);
+        Zoom = Math.Clamp(usable / (widest / 72.0 * BaseDpi), MinZoom, MaxZoom);
     }
 
     public void SetZoomToFitPage(double viewportWidth, double viewportHeight, double padding = 64)
@@ -355,8 +341,8 @@ public partial class MainWindowViewModel : ObservableObject
         var current = Pages[Math.Clamp(CurrentPage - 1, 0, Pages.Count - 1)];
         var usableW = Math.Max(100, viewportWidth - padding);
         var usableH = Math.Max(100, viewportHeight - padding);
-        var zoomW = usableW / (current.NativeWidthPoints / 72.0 * 96.0);
-        var zoomH = usableH / (current.NativeHeightPoints / 72.0 * 96.0);
+        var zoomW = usableW / (current.NativeWidthPoints / 72.0 * BaseDpi);
+        var zoomH = usableH / (current.NativeHeightPoints / 72.0 * BaseDpi);
         Zoom = Math.Clamp(Math.Min(zoomW, zoomH), MinZoom, MaxZoom);
     }
 
@@ -370,15 +356,31 @@ public partial class MainWindowViewModel : ObservableObject
     private async Task PrintAsync()
     {
         if (_printService is null || !HasDocument) return;
+
+        var tcs = new TaskCompletionSource<PrintOptions?>();
+        PrintDialogRequested?.Invoke(this, tcs);
+        var options = await tcs.Task;
+        if (options is null) return;
+
         try
         {
+            IsBusy = true;
             StatusText = "A preparar impressão…";
-            await _printService.PrintAsync(_pdfService, PageCount, DocumentName);
-            StatusText = $"{PageCount} {(PageCount == 1 ? "página" : "páginas")}";
+            await _printService.PrintAsync(_pdfService, PageCount, DocumentName, options);
+            StatusText = "Documento enviado para a impressora.";
+        }
+        catch (OperationCanceledException)
+        {
+            StatusText = "Impressão cancelada.";
         }
         catch (Exception ex)
         {
             ErrorText = $"Não foi possível imprimir: {ex.Message}";
+            StatusText = "Falha na impressão.";
+        }
+        finally
+        {
+            IsBusy = false;
         }
     }
 
