@@ -1,3 +1,4 @@
+using Avalonia.Media.Imaging;
 using CommunityToolkit.Mvvm.ComponentModel;
 
 namespace VunLerDoc.ViewModels;
@@ -10,17 +11,20 @@ public partial class PdfPageItemViewModel : ObservableObject
     public double NativeWidthPoints { get; private set; } = 210 * 72 / 25.4;
     public double NativeHeightPoints { get; private set; } = 297 * 72 / 25.4;
 
-    [ObservableProperty] private byte[]? _thumbnail;
-    [ObservableProperty] private byte[]? _fullImage;
+    // Bitmaps are decoded once (off the UI thread, see MainWindowViewModel) and bound directly,
+    // instead of raw byte[] re-decoded on every binding pass through an IValueConverter.
+    [ObservableProperty] private Bitmap? _thumbnail;
+    [ObservableProperty] private Bitmap? _fullImage;
     [ObservableProperty] private double _displayWidth;
     [ObservableProperty] private double _displayHeight;
     [ObservableProperty] private bool _isRendering;
     [ObservableProperty] private bool _hasNativeSize;
 
-    public byte[]? DisplayImage => FullImage ?? Thumbnail;
+    /// <summary>Full-quality render when ready, otherwise the low-res placeholder.</summary>
+    public Bitmap? DisplayImage => FullImage ?? Thumbnail;
 
-    partial void OnFullImageChanged(byte[]? value) => OnPropertyChanged(nameof(DisplayImage));
-    partial void OnThumbnailChanged(byte[]? value) => OnPropertyChanged(nameof(DisplayImage));
+    partial void OnFullImageChanged(Bitmap? value) => OnPropertyChanged(nameof(DisplayImage));
+    partial void OnThumbnailChanged(Bitmap? value) => OnPropertyChanged(nameof(DisplayImage));
 
     public PdfPageItemViewModel(int index)
     {

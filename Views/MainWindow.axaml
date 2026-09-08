@@ -14,7 +14,6 @@
         Background="#525659"
         DragDrop.AllowDrop="True">
   <Window.Resources>
-    <conv:ByteArrayToBitmapConverter x:Key="ByteArrayToBitmapConverter" />
     <conv:NotEmptyStringConverter x:Key="StringNotEmptyConverter" />
     <conv:BooleanNegationConverter x:Key="BooleanNegationConverter" />
   </Window.Resources>
@@ -104,7 +103,7 @@
               <DataTemplate x:DataType="vm:PdfPageItemViewModel">
                 <StackPanel Spacing="4" HorizontalAlignment="Center" Tag="{Binding Index}" PointerPressed="ThumbnailPressed">
                   <Border Background="White" BorderBrush="#4A4E51" BorderThickness="1" Padding="0" MaxWidth="150">
-                    <Image Source="{Binding Thumbnail, Converter={StaticResource ByteArrayToBitmapConverter}}"
+                    <Image Source="{Binding Thumbnail}"
                            Stretch="Uniform" MaxWidth="148" />
                   </Border>
                   <TextBlock Text="{Binding PageNumber}" Foreground="#B7BABD" FontSize="11" HorizontalAlignment="Center" />
@@ -143,7 +142,7 @@
                         Height="{Binding DisplayHeight}"
                         Margin="0,0,0,16">
                   <Panel>
-                    <Image Source="{Binding DisplayImage, Converter={StaticResource ByteArrayToBitmapConverter}}"
+                    <Image Source="{Binding DisplayImage}"
                            Stretch="Fill"
                            RenderOptions.BitmapInterpolationMode="HighQuality" />
                     <Border IsVisible="{Binding IsRendering}"

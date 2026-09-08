@@ -33,6 +33,11 @@ public partial class MainWindow : Window
 
         AddHandler(DragDrop.DropEvent, OnDrop);
         AddHandler(DragDrop.DragOverEvent, OnDragOver);
+
+        // Tunnel (not bubble) so this runs *before* PagesList - a focused ListBox has its own
+        // built-in Up/Down = "move selection" behaviour, which would otherwise intercept the
+        // arrow keys before our scroll/page-navigation handling ever saw them.
+        AddHandler(KeyDownEvent, OnArrowKeyDown, RoutingStrategies.Tunnel);
     }
 
     private void OnScrollToPageRequested(object? sender, int index)
@@ -136,6 +141,39 @@ public partial class MainWindow : Window
     {
         if (DataContext is MainWindowViewModel vm)
             vm.UpdateCurrentPageFromScrollOffset(PageScrollViewer.Offset.Y);
+    }
+
+    /// <summary>
+    /// Up/Down = scroll the page list a small step, Left/Right = previous/next page - the four
+    /// controls the user reaches for without touching the mouse. Plain keys only (no modifiers),
+    /// so this never fights with the Ctrl+ shortcuts in <see cref="OnKeyDown"/> below, and it
+    /// backs off while a text field has focus so it never hijacks ordinary typing.
+    /// </summary>
+    private void OnArrowKeyDown(object? sender, KeyEventArgs e)
+    {
+        if (DataContext is not MainWindowViewModel vm || !vm.HasDocument) return;
+        if (e.KeyModifiers != KeyModifiers.None) return;
+        if (FocusManager?.GetFocusedElement() is TextBox) return;
+
+        switch (e.Key)
+        {
+            case Key.Down:
+                PageScrollViewer.LineDown();
+                e.Handled = true;
+                break;
+            case Key.Up:
+                PageScrollViewer.LineUp();
+                e.Handled = true;
+                break;
+            case Key.Right:
+                if (vm.NextPageCommand.CanExecute(null)) vm.NextPageCommand.Execute(null);
+                e.Handled = true;
+                break;
+            case Key.Left:
+                if (vm.PreviousPageCommand.CanExecute(null)) vm.PreviousPageCommand.Execute(null);
+                e.Handled = true;
+                break;
+        }
     }
 
     protected override void OnKeyDown(KeyEventArgs e)
