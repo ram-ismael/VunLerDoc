@@ -12,7 +12,7 @@ namespace VunLerDoc.Services;
 public sealed class PdfiumDocumentService : IPdfDocumentService
 {
     private PdfDocument? _document;
-    private readonly SemaphoreSlim _gate = new(1, 1);
+    private readonly PriorityGate _gate = new();
 
     public int PageCount => _document?.PageCount ?? 0;
     public string? FilePath { get; private set; }
@@ -21,8 +21,7 @@ public sealed class PdfiumDocumentService : IPdfDocumentService
     {
         ArgumentException.ThrowIfNullOrWhiteSpace(filePath);
 
-        await _gate.WaitAsync(cancellationToken);
-        try
+        using (await _gate.EnterAsync(highPriority: true, cancellationToken))
         {
             cancellationToken.ThrowIfCancellationRequested();
             var document = await Task.Run(() => new PdfDocument(filePath), cancellationToken);
@@ -30,20 +29,20 @@ public sealed class PdfiumDocumentService : IPdfDocumentService
             _document = document;
             FilePath = filePath;
         }
-        finally
-        {
-            _gate.Release();
-        }
     }
 
+    /// <summary>
+    /// Full-quality on-screen/print render. Always high priority: this is what the user is
+    /// actually looking at (or printing), so it must never queue behind background thumbnail
+    /// generation - see <see cref="PriorityGate"/>.
+    /// </summary>
     public async Task<byte[]> RenderPageAsync(int pageIndex, float dpi, int rotationDegrees = 0, CancellationToken cancellationToken = default)
     {
         EnsurePageIndex(pageIndex);
         dpi = Math.Clamp(dpi, 24f, 1200f);
         var normalizedRotation = ((rotationDegrees % 360) + 360) % 360;
 
-        await _gate.WaitAsync(cancellationToken);
-        try
+        using (await _gate.EnterAsync(highPriority: true, cancellationToken))
         {
             cancellationToken.ThrowIfCancellationRequested();
             return await Task.Run(() =>
@@ -51,10 +50,6 @@ public sealed class PdfiumDocumentService : IPdfDocumentService
                 var bytes = RenderAtDpi(pageIndex, dpi);
                 return normalizedRotation == 0 ? bytes : RotatePng(bytes, normalizedRotation);
             }, cancellationToken);
-        }
-        finally
-        {
-            _gate.Release();
         }
     }
 
@@ -86,13 +81,17 @@ public sealed class PdfiumDocumentService : IPdfDocumentService
         return data.ToArray();
     }
 
+    /// <summary>
+    /// Cheap low-res render for the sidebar rail and initial aspect-ratio probing. Always low
+    /// priority so it can never delay the full-quality render of whatever page is actually
+    /// on screen - see <see cref="PriorityGate"/>.
+    /// </summary>
     public async Task<ThumbnailResult> RenderThumbnailAsync(int pageIndex, int maxDimension, CancellationToken cancellationToken = default)
     {
         EnsurePageIndex(pageIndex);
         maxDimension = Math.Max(16, maxDimension);
 
-        await _gate.WaitAsync(cancellationToken);
-        try
+        using (await _gate.EnterAsync(highPriority: false, cancellationToken))
         {
             cancellationToken.ThrowIfCancellationRequested();
             return await Task.Run(() =>
@@ -119,10 +118,6 @@ public sealed class PdfiumDocumentService : IPdfDocumentService
                 using var finalBitmap = SKBitmap.Decode(finalBytes);
                 return new ThumbnailResult(finalBytes, finalBitmap.Width, finalBitmap.Height);
             }, cancellationToken);
-        }
-        finally
-        {
-            _gate.Release();
         }
     }
 
@@ -152,5 +147,97 @@ public sealed class PdfiumDocumentService : IPdfDocumentService
         _document = null;
         FilePath = null;
         _gate.Dispose();
+    }
+}
+
+/// <summary>
+/// A single-slot mutex where "high priority" waiters always get the gate before "low
+/// priority" waiters, regardless of arrival order. Used to keep pdfium calls serialized
+/// (required - it isn't thread-safe) while guaranteeing the page the user is actually
+/// looking at is never stuck in line behind background thumbnail generation.
+/// </summary>
+internal sealed class PriorityGate : IDisposable
+{
+    private readonly object _lock = new();
+    private readonly Queue<TaskCompletionSource> _highPriorityWaiters = new();
+    private readonly Queue<TaskCompletionSource> _lowPriorityWaiters = new();
+    private bool _isHeld;
+    private bool _isDisposed;
+
+    public async Task<IDisposable> EnterAsync(bool highPriority, CancellationToken cancellationToken)
+    {
+        var tcs = new TaskCompletionSource(TaskCreationOptions.RunContinuationsAsynchronously);
+
+        lock (_lock)
+        {
+            ObjectDisposedException.ThrowIf(_isDisposed, this);
+
+            if (!_isHeld)
+            {
+                _isHeld = true;
+                tcs.TrySetResult();
+            }
+            else
+            {
+                (highPriority ? _highPriorityWaiters : _lowPriorityWaiters).Enqueue(tcs);
+            }
+        }
+
+        using (cancellationToken.Register(() => tcs.TrySetCanceled(cancellationToken)))
+        {
+            await tcs.Task.ConfigureAwait(false);
+        }
+
+        return new Releaser(this);
+    }
+
+    private void Release()
+    {
+        lock (_lock)
+        {
+            // High-priority waiters (on-screen/print renders) always jump the queue ahead of
+            // low-priority ones (background thumbnails), no matter which arrived first.
+            while (true)
+            {
+                var next = _highPriorityWaiters.Count > 0 ? _highPriorityWaiters.Dequeue()
+                         : _lowPriorityWaiters.Count > 0 ? _lowPriorityWaiters.Dequeue()
+                         : null;
+
+                if (next is null)
+                {
+                    _isHeld = false;
+                    return;
+                }
+
+                // Ownership passes directly to 'next' - gate stays held, just changes hands.
+                // If 'next' was already cancelled while queued, TrySetResult fails - try the
+                // next candidate instead of leaving the gate stuck "held" with no owner.
+                if (next.TrySetResult())
+                    return;
+            }
+        }
+    }
+
+    public void Dispose()
+    {
+        lock (_lock)
+        {
+            _isDisposed = true;
+            foreach (var waiter in _highPriorityWaiters) waiter.TrySetCanceled();
+            foreach (var waiter in _lowPriorityWaiters) waiter.TrySetCanceled();
+            _highPriorityWaiters.Clear();
+            _lowPriorityWaiters.Clear();
+        }
+    }
+
+    private sealed class Releaser(PriorityGate gate) : IDisposable
+    {
+        private int _released;
+
+        public void Dispose()
+        {
+            if (Interlocked.Exchange(ref _released, 1) == 0)
+                gate.Release();
+        }
     }
 }
