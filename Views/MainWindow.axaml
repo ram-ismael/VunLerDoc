@@ -52,19 +52,19 @@
           <materialIcons:MaterialIcon Kind="ChevronRight" Width="22" Height="22" />
         </Button>
 
-        <Button Grid.Column="6" Classes="toolbar-dark" Command="{Binding ZoomOutCommand}" IsEnabled="{Binding HasDocument}" ToolTip.Tip="Diminuir zoom" Margin="10,0,0,0">
+        <Button Grid.Column="6" Classes="toolbar-dark" Command="{Binding ZoomOutCommand}" IsEnabled="{Binding IsInteractive}" ToolTip.Tip="Diminuir zoom" Margin="10,0,0,0">
           <materialIcons:MaterialIcon Kind="MagnifyMinusOutline" Width="20" Height="20" />
         </Button>
 
-        <Button Grid.Column="7" Classes="toolbar-dark" Command="{Binding ResetZoomCommand}" IsEnabled="{Binding HasDocument}" ToolTip.Tip="Repor zoom (100%)">
+        <Button Grid.Column="7" Classes="toolbar-dark" Command="{Binding ResetZoomCommand}" IsEnabled="{Binding IsInteractive}" ToolTip.Tip="Repor zoom (100%)">
           <TextBlock Text="{Binding ZoomLabel}" FontSize="12" MinWidth="42" HorizontalAlignment="Center" />
         </Button>
 
-        <Button Grid.Column="8" Classes="toolbar-dark" Command="{Binding ZoomInCommand}" IsEnabled="{Binding HasDocument}" ToolTip.Tip="Aumentar zoom">
+        <Button Grid.Column="8" Classes="toolbar-dark" Command="{Binding ZoomInCommand}" IsEnabled="{Binding IsInteractive}" ToolTip.Tip="Aumentar zoom">
           <materialIcons:MaterialIcon Kind="MagnifyPlusOutline" Width="20" Height="20" />
         </Button>
 
-        <Button Grid.Column="9" Classes="toolbar-dark" IsEnabled="{Binding HasDocument}" ToolTip.Tip="Ajustar" Margin="10,0,0,0">
+        <Button Grid.Column="9" Classes="toolbar-dark" IsEnabled="{Binding IsInteractive}" ToolTip.Tip="Ajustar" Margin="10,0,0,0">
           <materialIcons:MaterialIcon Kind="FitToPageOutline" Width="20" Height="20" />
           <Button.Flyout>
             <MenuFlyout Placement="BottomEdgeAlignedLeft">
@@ -74,7 +74,7 @@
           </Button.Flyout>
         </Button>
 
-        <Button Grid.Column="10" Classes="toolbar-dark" Command="{Binding RotateClockwiseCommand}" IsEnabled="{Binding HasDocument}" ToolTip.Tip="Rodar">
+        <Button Grid.Column="10" Classes="toolbar-dark" Command="{Binding RotateClockwiseCommand}" IsEnabled="{Binding IsInteractive}" ToolTip.Tip="Rodar">
           <materialIcons:MaterialIcon Kind="RotateRight" Width="20" Height="20" />
         </Button>
 
@@ -120,7 +120,7 @@
                       VerticalScrollBarVisibility="Auto"
                       ScrollChanged="PageScrollViewerScrollChanged"
                       PointerWheelChanged="PageScrollViewerPointerWheelChanged"
-                      IsVisible="{Binding HasDocument}">
+                      IsVisible="{Binding IsDocumentReady}">
           <ListBox Name="PagesList"
                     ItemsSource="{Binding Pages}"
                     Background="Transparent"
@@ -161,6 +161,17 @@
           <TextBlock Text="VunLerDoc" FontSize="30" FontWeight="SemiBold" HorizontalAlignment="Center" Foreground="White" />
           <TextBlock Text="Abra um ficheiro PDF para começar" Margin="0,10,0,0" FontSize="15" Foreground="#C6C9CC" HorizontalAlignment="Center" />
           <Button Content="Abrir PDF" Click="OpenPdfClick" HorizontalAlignment="Center" Margin="0,24,0,0" Padding="24,11" />
+        </StackPanel>
+
+        <!-- Full-document priming: shown from the moment a file is opened until every page has
+             been rasterized once. The page list only appears once IsDocumentReady flips true
+             (above), so scrolling never has to fall back to a low-resolution placeholder. -->
+        <StackPanel IsVisible="{Binding IsPriming}" HorizontalAlignment="Center" VerticalAlignment="Center" Width="300" Spacing="14">
+          <TextBlock Text="{Binding DocumentName}"
+                     Foreground="#E8EAED" FontSize="15" FontWeight="Medium"
+                     HorizontalAlignment="Center" TextTrimming="CharacterEllipsis" MaxWidth="300" />
+          <ProgressBar Minimum="0" Maximum="1" Value="{Binding LoadProgress}" Height="6" CornerRadius="3" Foreground="#8AB4F8" Background="#3C4043" />
+          <TextBlock Text="{Binding StatusText}" Foreground="#9AA0A6" FontSize="12" HorizontalAlignment="Center" />
         </StackPanel>
 
         <Border Background="#B0101418" CornerRadius="10" Padding="16,10" HorizontalAlignment="Center" VerticalAlignment="Top" Margin="0,12" IsVisible="{Binding IsBusy}">
