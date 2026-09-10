@@ -121,7 +121,10 @@ public partial class MainWindow : Window
 
     private void ThumbnailPressed(object? sender, PointerPressedEventArgs e)
     {
-        if (sender is Control { Tag: int index } && DataContext is MainWindowViewModel vm)
+        // The sidebar rail fills in progressively during priming (see IsPriming in the view) so
+        // it stays alive/visible instead of a dead loading screen, but the main page list itself
+        // is still hidden at that point - ignore taps until it's actually there to scroll to.
+        if (sender is Control { Tag: int index } && DataContext is MainWindowViewModel vm && vm.IsInteractive)
             vm.GoToPage(index + 1);
     }
 
@@ -151,7 +154,7 @@ public partial class MainWindow : Window
     /// </summary>
     private void OnArrowKeyDown(object? sender, KeyEventArgs e)
     {
-        if (DataContext is not MainWindowViewModel vm || !vm.HasDocument) return;
+        if (DataContext is not MainWindowViewModel vm || !vm.IsInteractive) return;
         if (e.KeyModifiers != KeyModifiers.None) return;
         if (FocusManager?.GetFocusedElement() is TextBox) return;
 
@@ -190,15 +193,19 @@ public partial class MainWindow : Window
                 if (vm.PrintCommand.CanExecute(null)) vm.PrintCommand.Execute(null);
                 e.Handled = true;
                 break;
-            case Key.D0 or Key.NumPad0:
+            // Zoom shortcuts are gated on IsInteractive (not just HasDocument): changing zoom
+            // while the priming pass is still running would invalidate _pageRasterBytes mid-loop
+            // (see OnZoomChanged/InvalidatePrimedBytes), which is exactly the kind of half-primed
+            // state the priming pass exists to avoid ever showing.
+            case Key.D0 or Key.NumPad0 when vm.IsInteractive:
                 vm.ResetZoomCommand.Execute(null);
                 e.Handled = true;
                 break;
-            case Key.OemPlus or Key.Add:
+            case Key.OemPlus or Key.Add when vm.IsInteractive:
                 vm.ZoomInCommand.Execute(null);
                 e.Handled = true;
                 break;
-            case Key.OemMinus or Key.Subtract:
+            case Key.OemMinus or Key.Subtract when vm.IsInteractive:
                 vm.ZoomOutCommand.Execute(null);
                 e.Handled = true;
                 break;
@@ -207,7 +214,7 @@ public partial class MainWindow : Window
 
     private void PageScrollViewerPointerWheelChanged(object? sender, PointerWheelEventArgs e)
     {
-        if (DataContext is not MainWindowViewModel vm) return;
+        if (DataContext is not MainWindowViewModel vm || !vm.IsInteractive) return;
         if (!e.KeyModifiers.HasFlag(KeyModifiers.Control)) return;
 
         if (e.Delta.Y > 0) vm.ZoomInCommand.Execute(null);
