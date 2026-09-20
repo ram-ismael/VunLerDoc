@@ -24,6 +24,13 @@ public interface IPdfDocumentService : IDisposable
     Task<byte[]> RenderPageAsync(int pageIndex, float dpi, int rotationDegrees = 0, CancellationToken cancellationToken = default);
 
     /// <summary>
+    /// Same full-quality PDFium rasterization as <see cref="RenderPageAsync"/>, but queued at
+    /// background priority. Visible/on-demand pages always jump ahead of this work, which lets
+    /// the reader progressively prepare the rest of a document without making navigation wait.
+    /// </summary>
+    Task<byte[]> RenderPageBackgroundAsync(int pageIndex, float dpi, int rotationDegrees = 0, CancellationToken cancellationToken = default);
+
+    /// <summary>
     /// Renders a small preview (longest side capped at <paramref name="maxDimension"/> pixels)
     /// used for the thumbnail rail and to learn the page's aspect ratio up front, so the
     /// continuous-scroll layout can reserve the correct slot height before the full-resolution

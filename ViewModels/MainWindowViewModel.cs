@@ -18,34 +18,30 @@ public partial class MainWindowViewModel : ObservableObject
     /// <summary>Base DPI used for "100 %". 120 instead of 96 makes the default view ~25 % larger.</summary>
     private const double BaseDpi = 120.0;
 
+    /// <summary>
+    /// Every PDF page is rasterized exactly once at this high-quality master resolution. Zoom
+    /// only changes layout/scaling of the cached bitmap; it never asks PDFium to render again.
+    /// 480 DPI is BaseDpi * MaxZoom, so a page remains 1:1 sharp up to 400% on a 1x display.
+    /// </summary>
+    private const float PreparedRenderDpi = 480f;
+
     /// <summary>How many pages either side of the viewport to render ahead of time.</summary>
     private const int PrefetchRadius = 1;
 
     /// <summary>
-    /// Soft memory ceiling for decoded (ARGB32, in-memory) full-resolution page bitmaps kept
-    /// resident at once. Recomputed into <see cref="_renderCacheCapacity"/> once the pixel size
-    /// of the first primed page is known, so it adapts to page size/DPI instead of a fixed page
-    /// count. For the vast majority of documents (tens to a couple hundred pages at normal DPI)
-    /// this comfortably covers every page, so once priming finishes the whole document stays
-    /// decoded and scrolling anywhere is instant. Only unusually large documents (very high page
-    /// counts and/or very high effective DPI) exceed it - those fall back to a bounded LRU window
-    /// plus fast on-demand decoding from the still-fully-primed <see cref="_pageRasterBytes"/>
-    /// cache (see <see cref="RequestPageRenderAsync"/>), which never re-invokes PDFium, so this
-    /// scales to arbitrarily large documents without ever risking unbounded memory growth.
+    /// Soft memory ceiling for decoded ARGB page bitmaps. Full-resolution PNG bytes are prepared
+    /// progressively, while decoded display bitmaps use this bounded LRU cache.
     /// </summary>
     private const long RenderCacheMemoryBudgetBytes = 384L * 1024 * 1024; // ~384 MB
 
-    /// <summary>Floor for <see cref="_renderCacheCapacity"/> even on very large/high-DPI pages.</summary>
-    private const int MinRenderCacheCapacity = 12;
-
     /// <summary>
-    /// Page indices that are never evicted from the decoded-bitmap LRU cache, regardless of
-    /// memory pressure. Priming rasterizes pages in order (0, 1, 2, ...), which means page 0 is
-    /// the *least* recently touched the instant priming ends - on a large document that exceeds
-    /// the cache budget, plain LRU eviction would pick the very first page or two (exactly what's
-    /// on screen the instant the document is revealed) as the first eviction candidates. Pinning
-    /// them sidesteps that.
+    /// Floor for decoded 480-DPI page bitmaps. The compressed master PNG for every prepared page
+    /// remains available even after decoded bitmaps are evicted, so returning to a page never
+    /// causes another PDFium render.
     /// </summary>
+    private const int MinRenderCacheCapacity = 3;
+
+    /// <summary>Keep the first two pages resident so opening/returning to the top never flashes.</summary>
     private static readonly HashSet<int> PinnedPageIndices = new() { 0, 1 };
 
     private int _renderCacheCapacity = 20;
@@ -69,25 +65,30 @@ public partial class MainWindowViewModel : ObservableObject
     private readonly Dictionary<int, CancellationTokenSource> _renderTokens = new();
     private readonly Dictionary<int, CancellationTokenSource> _prepareDebounceTokens = new();
 
-    // LRU cache of decoded full-resolution page bitmaps, keyed by page index. Cleared whenever
-    // zoom/rotation changes since every entry is only valid for the DPI it was rendered at.
+    // LRU cache of decoded master page bitmaps, keyed by page index. Zoom and rotation never
+    // invalidate this cache: they are presentation-only operations over the same master image.
     private readonly Dictionary<int, Bitmap> _renderCache = new();
     private readonly LinkedList<int> _cacheUsageOrder = new();
     private readonly Dictionary<int, LinkedListNode<int>> _cacheNodes = new();
 
     /// <summary>
-    /// Compressed (PNG) bytes from the priming pass, one entry per page, indexed by page index.
-    /// This is the source of truth for "already rasterized at the current zoom/rotation": once a
-    /// page is primed, redisplaying it is a cheap in-memory decode with no PDFium call, so it
-    /// never produces a visible blur/placeholder step no matter how the decoded-bitmap LRU cache
-    /// above evicts it. Cleared (all entries set back to null) whenever zoom or rotation changes,
-    /// since every entry is only valid for the DPI/rotation it was rendered at - see
-    /// <see cref="InvalidatePrimedBytes"/>.
+    /// High-quality master PNG bytes prepared once per page, always in the PDF's original
+    /// orientation. Visible pages can decode these immediately without another PDFium call;
+    /// zoom/rotation only change presentation and never invalidate these bytes.
     /// </summary>
     private byte[]?[] _pageRasterBytes = Array.Empty<byte[]?>();
 
+    // One shared raster task per page prevents the background primer and an on-screen request
+    // from rasterizing the same page at the same time. The first request wins; everyone else
+    // awaits that exact task. Only opening another document cancels this underlying work.
+    private readonly object _pageRasterTaskLock = new();
+    private Task<byte[]>?[] _pageRasterTasks = Array.Empty<Task<byte[]>?>();
+
+    private CancellationTokenSource? _openCts;
     private CancellationTokenSource? _primingCts;
-    private CancellationTokenSource? _zoomDebounceCts;
+    private CancellationTokenSource? _documentRenderCts;
+    private int _documentGeneration;
+    private int _renderRevision;
 
     public event EventHandler<int>? ScrollToPageRequested;
 
@@ -101,33 +102,31 @@ public partial class MainWindowViewModel : ObservableObject
     [ObservableProperty] private string _pageIndicator = "0 / 0";
     [ObservableProperty] private string _zoomLabel = "100%";
     [ObservableProperty] private bool _isBusy;
+    [ObservableProperty] private bool _isOpeningDocument;
     [ObservableProperty] private bool _isSidebarVisible = true;
     [ObservableProperty] private string _statusText = "Abra um ficheiro PDF para começar.";
+    [ObservableProperty] private string _backgroundStatusText = string.Empty;
     [ObservableProperty] private string _errorText = string.Empty;
 
-    /// <summary>True while the full-document priming pass (see <see cref="RunPrimingPassAsync"/>) is running.</summary>
+    /// <summary>True while pages beyond the initial visible page are being prepared in the background.</summary>
     [ObservableProperty] private bool _isPriming;
 
     /// <summary>Priming progress in the 0–1 range, for the loading overlay's progress bar.</summary>
     [ObservableProperty] private double _loadProgress;
 
     /// <summary>
-    /// True once every page has been rasterized once by the priming pass. The page list stays
-    /// hidden until this flips true, so the document is only ever shown fully ready - scrolling
-    /// never has to fall back to a low-resolution placeholder mid-flick.
+    /// True once the first page has been rendered and the native reader surface can be revealed.
+    /// Remaining pages continue to prepare at lower priority in the background.
     /// </summary>
     [ObservableProperty] private bool _isDocumentReady;
-
-    public double RenderScaling { get; set; } = 1.0;
 
     public ObservableCollection<PdfPageItemViewModel> Pages { get; } = new();
 
     public bool HasDocument => PageCount > 0;
 
     /// <summary>
-    /// True once there's a document AND the priming pass has finished. Page navigation, zoom,
-    /// rotation and print are gated on this (not just <see cref="HasDocument"/>) so none of them
-    /// can be triggered while the document is still being prepared.
+    /// True once the first full-quality page is ready. Background preparation never blocks
+    /// navigation, zoom, rotation or printing.
     /// </summary>
     public bool IsInteractive => HasDocument && IsDocumentReady;
     public bool CanGoPrevious => IsInteractive && CurrentPage > 1;
@@ -167,11 +166,9 @@ public partial class MainWindowViewModel : ObservableObject
         foreach (var page in Pages)
             page.UpdateLayout(value, RotationDegrees, BaseDpi);
 
-        // Every cached bitmap (decoded or raw primed bytes) was rasterized at the old DPI - it's
-        // stale the instant zoom changes.
-        InvalidateRenderCache();
-        InvalidatePrimedBytes();
-        DebounceRerenderPreparedPages();
+        // Zoom is presentation-only. A page that has already been prepared keeps exactly the
+        // same master bitmap/PNG; Avalonia scales it immediately with high-quality interpolation.
+        // Crucially: do not cancel priming, clear caches or ask PDFium to render again here.
     }
 
     partial void OnRotationDegreesChanged(int value)
@@ -179,9 +176,8 @@ public partial class MainWindowViewModel : ObservableObject
         foreach (var page in Pages)
             page.UpdateLayout(Zoom, value, BaseDpi);
 
-        InvalidateRenderCache();
-        InvalidatePrimedBytes();
-        DebounceRerenderPreparedPages();
+        // Rotation is also presentation-only. PdfPageItemViewModel exposes the angle to the view,
+        // which rotates the already-cached bitmap without another PDFium call.
     }
 
     public MainWindowViewModel(IPdfDocumentService pdfService, IPdfPrintService? printService = null)
@@ -193,28 +189,58 @@ public partial class MainWindowViewModel : ObservableObject
 
     public async Task OpenPdfAsync(string path)
     {
+        var generation = ++_documentGeneration;
+
         ErrorText = string.Empty;
-        IsBusy = true;
+        IsBusy = false;
         IsPriming = false;
         IsDocumentReady = false;
+        IsOpeningDocument = true;
+        LoadProgress = 0;
+        BackgroundStatusText = string.Empty;
         StatusText = "A abrir documento…";
+
+        _openCts?.Cancel();
+        _openCts?.Dispose();
+        var openOwner = new CancellationTokenSource();
+        _openCts = openOwner;
+        var openToken = openOwner.Token;
+
+        // The document render token deliberately lives beyond OpenPdfAsync: page rasterization
+        // continues in the background and is cancelled only when a different PDF replaces it.
+        _documentRenderCts?.Cancel();
+        _documentRenderCts?.Dispose();
+        _documentRenderCts = new CancellationTokenSource();
+
+        CancelBackgroundPriming();
         CancelAllRenders();
-        _primingCts?.Cancel();
+
+        // Reset presentation state before the new document is installed. Zoom/rotation no longer
+        // invalidate raster data; the render revision below changes only when the document does.
+        RotationDegrees = 0;
+        Zoom = 1.0;
+        _renderRevision++;
+
+        InvalidateRenderCache();
+        foreach (var oldPage in Pages)
+            oldPage.Thumbnail?.Dispose();
+        Pages.Clear();
+        _pageRasterBytes = Array.Empty<byte[]?>();
+        _pageRasterTasks = Array.Empty<Task<byte[]>?>();
+        PageCount = 0;
+        CurrentPage = 0;
+        DocumentPath = string.Empty;
+        DocumentName = Path.GetFileName(path);
+        Title = $"{DocumentName} — VunLerDoc";
 
         try
         {
-            await _pdfService.OpenAsync(path);
+            await _pdfService.OpenAsync(path, openToken);
+            if (openToken.IsCancellationRequested || generation != _documentGeneration)
+                return;
+
             DocumentPath = path;
-            DocumentName = Path.GetFileName(path);
-            RotationDegrees = 0;
-            Zoom = 1.0;
 
-            // Release native bitmap memory from the previous document before dropping references.
-            InvalidateRenderCache();
-            foreach (var oldPage in Pages)
-                oldPage.Thumbnail?.Dispose();
-
-            Pages.Clear();
             var count = _pdfService.PageCount;
             for (var i = 0; i < count; i++)
             {
@@ -225,21 +251,45 @@ public partial class MainWindowViewModel : ObservableObject
 
             PageCount = count;
             CurrentPage = count > 0 ? 1 : 0;
-            Title = $"{DocumentName} — VunLerDoc";
-            _pageRasterBytes = new byte[count][];
+            _pageRasterBytes = new byte[]?[count];
+            _pageRasterTasks = new Task<byte[]>?[count];
             _renderCacheCapacity = 20;
 
-            // The page list stays hidden (see IsDocumentReady in the view) until every page has
-            // been rasterized once, so the reader is only ever shown fully ready - no scrolling
-            // through a partially-rendered document.
-            IsBusy = false;
-            _primingCts = new CancellationTokenSource();
-            await RunPrimingPassAsync(_primingCts.Token);
+            if (count == 0)
+            {
+                StatusText = "O documento não contém páginas.";
+                IsDocumentReady = false;
+                return;
+            }
+
+            // Only the first page is on the critical path. This keeps open-to-first-paint fast
+            // while still guaranteeing the reader never reveals a blurry first page.
+            StatusText = "A preparar a primeira página…";
+            await RequestPageRenderAsync(0);
+            if (openToken.IsCancellationRequested || generation != _documentGeneration)
+                return;
+
+            IsDocumentReady = true;
+            IsOpeningDocument = false;
+            StatusText = $"{PageCount} {(PageCount == 1 ? "página" : "páginas")}";
+
+            // Everything after page 1 is deliberately fire-and-continue UI work: the async loop
+            // yields on every PDFium render and is queued at low priority inside the service, so
+            // an on-screen page requested by scrolling always jumps ahead of it.
+            StartBackgroundPriming();
+        }
+        catch (OperationCanceledException) when (openToken.IsCancellationRequested)
+        {
+            // A newer OpenPdfAsync call superseded this one.
         }
         catch (Exception ex)
         {
+            if (generation != _documentGeneration)
+                return;
+
             Pages.Clear();
             PageCount = 0;
+            CurrentPage = 0;
             DocumentPath = string.Empty;
             DocumentName = "Nenhum documento aberto";
             ErrorText = $"Não foi possível abrir o PDF: {ex.Message}";
@@ -247,102 +297,170 @@ public partial class MainWindowViewModel : ObservableObject
             Title = "VunLerDoc";
             IsPriming = false;
             IsDocumentReady = false;
+
+            _documentRenderCts?.Cancel();
+            _documentRenderCts?.Dispose();
+            _documentRenderCts = null;
         }
         finally
         {
-            IsBusy = false;
+            if (generation == _documentGeneration)
+                IsOpeningDocument = false;
+
+            if (ReferenceEquals(_openCts, openOwner))
+            {
+                _openCts = null;
+                openOwner.Dispose();
+            }
+
             PrintCommand?.NotifyCanExecuteChanged();
         }
     }
 
     /// <summary>
-    /// Rasterizes every page once, up front, before the document is revealed (see
-    /// <see cref="IsDocumentReady"/>) - this is what guarantees scrolling never shows a
-    /// low-resolution placeholder: by the time the page list becomes visible, every page's
-    /// bytes are already sitting in <see cref="_pageRasterBytes"/>, and the majority of
-    /// documents fit entirely within <see cref="RenderCacheMemoryBudgetBytes"/> and so stay
-    /// fully decoded too (see the capacity calculation below), meaning the whole document is
-    /// pixel-perfect the instant it appears.
-    ///
-    /// The sidebar thumbnail for each page is derived from this same PDFium output (a cheap
-    /// in-process downscale) instead of a second native render, roughly halving the number of
-    /// PDFium calls compared to the old separate thumbnail pass.
+    /// Progressively rasterizes pages that are not currently needed on screen. Each page is
+    /// rasterized exactly once at PreparedRenderDpi in its original orientation. These renders
+    /// use the service's low-priority lane, while user-visible first-time requests use the
+    /// high-priority lane. Zooming/rotation never restart this pass or invalidate its results.
     /// </summary>
-    private async Task RunPrimingPassAsync(CancellationToken token)
+    private async Task RunPrimingPassAsync(
+        int documentGeneration,
+        int renderRevision,
+        CancellationTokenSource owner)
     {
+        var token = owner.Token;
         var total = Pages.Count;
-        if (total == 0)
+
+        try
         {
-            IsDocumentReady = true;
+            for (var i = 0; i < total; i++)
+            {
+                token.ThrowIfCancellationRequested();
+                if (documentGeneration != _documentGeneration || renderRevision != _renderRevision)
+                    return;
+
+                try
+                {
+                    var dpi = PreparedRenderDpi;
+                    const int rotation = 0;
+                    var bytes = _pageRasterBytes[i]
+                        ?? await GetOrRenderMasterPageAsync(i, highPriority: false, token);
+
+                    if (token.IsCancellationRequested || documentGeneration != _documentGeneration || renderRevision != _renderRevision)
+                        return;
+
+                    // GetOrRenderMasterPageAsync is shared by foreground and background callers,
+                    // so this byte[] is the one-and-only PDFium raster for this page. We still
+                    // finish any thumbnail/native-size decode that a cancelled viewport request
+                    // may not have had time to apply.
+                    var page = Pages[i];
+                    var needsThumbnail = page.Thumbnail is null || !page.HasNativeSize;
+
+                    if (needsThumbnail)
+                    {
+                        var (full, thumbnail, pixelWidth, pixelHeight) =
+                            await Task.Run(() => DecodeFullAndThumbnail(bytes), token);
+
+                        if (token.IsCancellationRequested || documentGeneration != _documentGeneration || renderRevision != _renderRevision)
+                        {
+                            full.Dispose();
+                            thumbnail.Dispose();
+                            return;
+                        }
+
+                        _pageRasterBytes[i] = bytes;
+                        SetNativeSizeFromRendered(page, pixelWidth, pixelHeight, dpi, rotation);
+                        if (i == 0) RecalculateRenderCacheCapacity();
+                        page.UpdateLayout(Zoom, RotationDegrees, BaseDpi);
+
+                        var previousThumbnail = page.Thumbnail;
+                        page.Thumbnail = thumbnail;
+                        previousThumbnail?.Dispose();
+
+                        CacheStore(i, full);
+                        page.FullImage = full;
+                    }
+                    else if (TryGetCached(i, out var cached))
+                    {
+                        page.FullImage = cached;
+                    }
+                    else
+                    {
+                        var full = await Task.Run(() => DecodeBitmap(bytes), token);
+                        if (token.IsCancellationRequested || documentGeneration != _documentGeneration || renderRevision != _renderRevision)
+                        {
+                            full.Dispose();
+                            return;
+                        }
+
+                        CacheStore(i, full);
+                        page.FullImage = full;
+                    }
+                }
+                catch (OperationCanceledException)
+                {
+                    return;
+                }
+                catch (Exception ex)
+                {
+                    if (!token.IsCancellationRequested && documentGeneration == _documentGeneration)
+                        ErrorText = $"Não foi possível preparar a página {i + 1}: {ex.Message}";
+                }
+
+                LoadProgress = (i + 1) / (double)total;
+                BackgroundStatusText = $"A preparar em segundo plano · {i + 1} / {total}";
+            }
+        }
+        finally
+        {
+            if (ReferenceEquals(_primingCts, owner))
+            {
+                if (!token.IsCancellationRequested && documentGeneration == _documentGeneration && renderRevision == _renderRevision)
+                {
+                    LoadProgress = 1;
+                    BackgroundStatusText = string.Empty;
+                    StatusText = $"{PageCount} {(PageCount == 1 ? "página" : "páginas")}";
+                }
+
+                IsPriming = false;
+                _primingCts = null;
+                owner.Dispose();
+            }
+        }
+    }
+
+    private void StartBackgroundPriming()
+    {
+        CancelBackgroundPriming();
+
+        if (!IsDocumentReady || PageCount <= 1 || _pageRasterBytes.Length != PageCount)
+        {
+            LoadProgress = PageCount == 1 ? 1 : 0;
+            BackgroundStatusText = string.Empty;
             return;
         }
 
+        var owner = new CancellationTokenSource();
+        _primingCts = owner;
         IsPriming = true;
-        LoadProgress = 0;
+        var readyCount = _pageRasterBytes.Count(bytes => bytes is not null);
+        LoadProgress = Math.Clamp(readyCount / (double)PageCount, 0, 1);
+        BackgroundStatusText = $"A preparar em segundo plano · {readyCount} / {PageCount}";
 
-        for (var i = 0; i < total; i++)
+        _ = RunPrimingPassAsync(_documentGeneration, _renderRevision, owner);
+    }
+
+    private void CancelBackgroundPriming()
+    {
+        if (_primingCts is not null)
         {
-            if (token.IsCancellationRequested) return;
-
-            try
-            {
-                var dpi = (float)(BaseDpi * Zoom * Math.Max(1.0, RenderScaling));
-                var bytes = await _pdfService.RenderPageAsync(i, dpi, RotationDegrees, token);
-                if (token.IsCancellationRequested) return;
-
-                // Decode on a background thread - PNG decode is real CPU work we don't want on
-                // the UI thread, especially now that it happens for every page, not just what's
-                // on screen.
-                var (full, thumbnail, pixelWidth, pixelHeight) =
-                    await Task.Run(() => DecodeFullAndThumbnail(bytes), token);
-                if (token.IsCancellationRequested)
-                {
-                    full.Dispose();
-                    thumbnail.Dispose();
-                    return;
-                }
-
-                if (i == 0)
-                {
-                    // Now that we know a real page's decoded pixel size, turn the memory budget
-                    // into an actual page count for the LRU cache - see RenderCacheMemoryBudgetBytes.
-                    var bytesPerPage = (long)pixelWidth * pixelHeight * 4;
-                    _renderCacheCapacity = (int)Math.Clamp(
-                        RenderCacheMemoryBudgetBytes / Math.Max(1L, bytesPerPage),
-                        MinRenderCacheCapacity,
-                        total);
-                }
-
-                _pageRasterBytes[i] = bytes;
-
-                var page = Pages[i];
-                page.SetNativeSize(pixelWidth, pixelHeight, dpi);
-                page.UpdateLayout(Zoom, RotationDegrees, BaseDpi);
-                page.Thumbnail = thumbnail;
-                CacheStore(i, full);
-                page.FullImage = full;
-            }
-            catch (OperationCanceledException)
-            {
-                return;
-            }
-            catch (Exception ex)
-            {
-                // A single bad page shouldn't stop the rest of the document from priming - it
-                // simply stays without a full render (falls back to whatever thumbnail it has,
-                // or a blank slot) and every other page still opens normally.
-                ErrorText = $"Não foi possível preparar a página {i + 1}: {ex.Message}";
-            }
-
-            LoadProgress = (i + 1) / (double)total;
-            StatusText = $"A preparar página {i + 1} de {total}…";
+            _primingCts.Cancel();
+            _primingCts.Dispose();
+            _primingCts = null;
         }
 
-        if (token.IsCancellationRequested) return;
-
         IsPriming = false;
-        IsDocumentReady = true;
-        StatusText = $"{PageCount} {(PageCount == 1 ? "página" : "páginas")}";
+        BackgroundStatusText = string.Empty;
     }
 
     public void NotifyPagePrepared(int index)
@@ -375,10 +493,7 @@ public partial class MainWindowViewModel : ObservableObject
 
         if (hasDecodedBitmap || hasPrimedBytes)
         {
-            // Either already decoded, or its bytes are already sitting in memory from the
-            // priming pass - decoding an in-memory PNG is a cheap, allocation-only operation
-            // with no PDFium round-trip, so there's nothing to gain by debouncing it: do it
-            // right away so a fast flick never shows the low-resolution thumbnail placeholder.
+            // A cache hit only needs an in-memory decode, so show it immediately.
             _ = RequestPageRenderAsync(index);
             return;
         }
@@ -391,24 +506,31 @@ public partial class MainWindowViewModel : ObservableObject
 
         var cts = new CancellationTokenSource();
         _prepareDebounceTokens[index] = cts;
-        var token = cts.Token;
+        _ = RequestPageRenderAfterDelayAsync(index, cts);
+    }
 
-        _ = Task.Run(async () =>
+    private async Task RequestPageRenderAfterDelayAsync(int index, CancellationTokenSource owner)
+    {
+        var token = owner.Token;
+        try
         {
-            try
-            {
-                await Task.Delay(PrepareDebounceMs, token);
-            }
-            catch (TaskCanceledException)
-            {
+            await Task.Delay(PrepareDebounceMs, token);
+            if (token.IsCancellationRequested || !_preparedIndices.Contains(index))
                 return;
-            }
-
-            if (token.IsCancellationRequested) return;
-            if (!_preparedIndices.Contains(index)) return; // cleared again before settling - skip
 
             await RequestPageRenderAsync(index);
-        }, token);
+        }
+        catch (OperationCanceledException)
+        {
+        }
+        finally
+        {
+            if (_prepareDebounceTokens.TryGetValue(index, out var current) && ReferenceEquals(current, owner))
+            {
+                _prepareDebounceTokens.Remove(index);
+                owner.Dispose();
+            }
+        }
     }
 
     public void NotifyPageCleared(int index)
@@ -445,7 +567,13 @@ public partial class MainWindowViewModel : ObservableObject
     /// </param>
     private async Task RequestPageRenderAsync(int index, bool isPrefetch = false)
     {
+        if (index < 0 || index >= Pages.Count)
+            return;
+
         var page = Pages[index];
+        var revision = _renderRevision;
+        const int rotation = 0;
+        var dpi = PreparedRenderDpi;
 
         if (TryGetCached(index, out var cachedBitmap))
         {
@@ -455,7 +583,9 @@ public partial class MainWindowViewModel : ObservableObject
 
         if (_renderTokens.TryGetValue(index, out var existing))
         {
-            if (isPrefetch) return; // Already rendering (real or prefetched) - don't duplicate the work.
+            if (isPrefetch)
+                return;
+
             existing.Cancel();
             existing.Dispose();
         }
@@ -464,50 +594,170 @@ public partial class MainWindowViewModel : ObservableObject
         _renderTokens[index] = cts;
         var token = cts.Token;
 
-        if (!isPrefetch) page.IsRendering = true;
+        if (!isPrefetch)
+            page.IsRendering = true;
+
         try
         {
             var primed = index < _pageRasterBytes.Length ? _pageRasterBytes[index] : null;
-            byte[] bytes;
-            if (primed is not null)
+            var bytes = primed ?? await GetOrRenderMasterPageAsync(index, highPriority: true, token);
+
+            if (token.IsCancellationRequested || revision != _renderRevision || index >= Pages.Count)
+                return;
+
+            var needsThumbnail = page.Thumbnail is null || !page.HasNativeSize;
+            if (needsThumbnail)
             {
-                // Already rasterized during the priming pass at the current zoom/rotation - no
-                // PDFium call needed, just decode bytes that are already sitting in memory.
-                bytes = primed;
+                var (full, thumbnail, pixelWidth, pixelHeight) =
+                    await Task.Run(() => DecodeFullAndThumbnail(bytes), token);
+
+                if (token.IsCancellationRequested || revision != _renderRevision || index >= Pages.Count)
+                {
+                    full.Dispose();
+                    thumbnail.Dispose();
+                    return;
+                }
+
+                SetNativeSizeFromRendered(page, pixelWidth, pixelHeight, dpi, rotation);
+                if (index == 0) RecalculateRenderCacheCapacity();
+                page.UpdateLayout(Zoom, RotationDegrees, BaseDpi);
+
+                var previousThumbnail = page.Thumbnail;
+                page.Thumbnail = thumbnail;
+                previousThumbnail?.Dispose();
+
+                CacheStore(index, full);
+                page.FullImage = full;
             }
             else
             {
-                // Not primed yet (zoom/rotation changed since the priming pass finished) - falls
-                // back to a fresh PDFium render, same as the original implementation.
-                var dpi = (float)(BaseDpi * Zoom * Math.Max(1.0, RenderScaling));
-                bytes = await _pdfService.RenderPageAsync(index, dpi, RotationDegrees, token);
+                var bitmap = await Task.Run(() => DecodeBitmap(bytes), token);
+                if (token.IsCancellationRequested || revision != _renderRevision || index >= Pages.Count)
+                {
+                    bitmap.Dispose();
+                    return;
+                }
+
+                CacheStore(index, bitmap);
+                page.FullImage = bitmap;
             }
-            if (token.IsCancellationRequested) return;
-
-            // Decode on a background thread so a big page never stalls the UI thread mid-scroll.
-            var bitmap = await Task.Run(() => DecodeBitmap(bytes), token);
-            if (token.IsCancellationRequested) { bitmap.Dispose(); return; }
-
-            CacheStore(index, bitmap);
-            page.FullImage = bitmap;
         }
         catch (OperationCanceledException)
         {
         }
         catch (Exception ex)
         {
-            if (!token.IsCancellationRequested && !isPrefetch)
+            if (!token.IsCancellationRequested && revision == _renderRevision && !isPrefetch)
                 ErrorText = $"Não foi possível renderizar a página {page.PageNumber}: {ex.Message}";
         }
         finally
         {
-            if (_renderTokens.TryGetValue(index, out var current) && current == cts)
+            if (_renderTokens.TryGetValue(index, out var current) && ReferenceEquals(current, cts))
             {
                 _renderTokens.Remove(index);
+                page.IsRendering = false;
                 cts.Dispose();
             }
-            if (!token.IsCancellationRequested) page.IsRendering = false;
         }
+    }
+
+    private Task<byte[]> GetOrRenderMasterPageAsync(
+        int index,
+        bool highPriority,
+        CancellationToken waitCancellationToken)
+    {
+        if (index < 0 || index >= _pageRasterBytes.Length)
+            throw new ArgumentOutOfRangeException(nameof(index));
+
+        Task<byte[]> sharedTask;
+        lock (_pageRasterTaskLock)
+        {
+            if (_pageRasterBytes[index] is { } ready)
+                return Task.FromResult(ready);
+
+            if (_pageRasterTasks[index] is { } existing)
+                return existing.WaitAsync(waitCancellationToken);
+
+            var documentToken = _documentRenderCts?.Token
+                ?? throw new InvalidOperationException("No PDF document render lifetime is active.");
+            var generation = _documentGeneration;
+
+            sharedTask = RenderMasterPageOnceAsync(index, highPriority, generation, documentToken);
+            _pageRasterTasks[index] = sharedTask;
+
+            // A genuine render failure may be retried later. Cancellation caused by opening a new
+            // document is harmless because that operation replaces the arrays entirely.
+            _ = sharedTask.ContinueWith(
+                completed =>
+                {
+                    if (completed.IsCompletedSuccessfully) return;
+                    lock (_pageRasterTaskLock)
+                    {
+                        if (index < _pageRasterTasks.Length &&
+                            ReferenceEquals(_pageRasterTasks[index], sharedTask))
+                            _pageRasterTasks[index] = null;
+                    }
+                },
+                CancellationToken.None,
+                TaskContinuationOptions.ExecuteSynchronously,
+                TaskScheduler.Default);
+        }
+
+        return sharedTask.WaitAsync(waitCancellationToken);
+    }
+
+    private async Task<byte[]> RenderMasterPageOnceAsync(
+        int index,
+        bool highPriority,
+        int documentGeneration,
+        CancellationToken documentToken)
+    {
+        var bytes = highPriority
+            ? await _pdfService.RenderPageAsync(index, PreparedRenderDpi, 0, documentToken)
+            : await _pdfService.RenderPageBackgroundAsync(index, PreparedRenderDpi, 0, documentToken);
+
+        documentToken.ThrowIfCancellationRequested();
+        if (documentGeneration != _documentGeneration)
+            throw new OperationCanceledException("The PDF document changed while the page was rendering.");
+
+        lock (_pageRasterTaskLock)
+        {
+            if (documentGeneration != _documentGeneration || index >= _pageRasterBytes.Length)
+                throw new OperationCanceledException("The PDF document changed while the page was rendering.");
+
+            _pageRasterBytes[index] ??= bytes;
+            return _pageRasterBytes[index]!;
+        }
+    }
+
+    private void RecalculateRenderCacheCapacity()
+    {
+        if (Pages.Count == 0 || !Pages[0].HasNativeSize)
+            return;
+
+        var dpi = PreparedRenderDpi;
+        var pixelWidth = Math.Max(1.0, Pages[0].NativeWidthPoints / 72.0 * dpi);
+        var pixelHeight = Math.Max(1.0, Pages[0].NativeHeightPoints / 72.0 * dpi);
+        var bytesPerPage = Math.Max(1L, (long)Math.Ceiling(pixelWidth * pixelHeight * 4.0));
+
+        _renderCacheCapacity = (int)Math.Clamp(
+            RenderCacheMemoryBudgetBytes / bytesPerPage,
+            MinRenderCacheCapacity,
+            Math.Max(MinRenderCacheCapacity, Pages.Count));
+    }
+
+    private static void SetNativeSizeFromRendered(
+        PdfPageItemViewModel page,
+        int renderedPixelWidth,
+        int renderedPixelHeight,
+        float dpi,
+        int rotationDegrees)
+    {
+        var normalizedRotation = ((rotationDegrees % 360) + 360) % 360;
+        if (normalizedRotation is 90 or 270)
+            (renderedPixelWidth, renderedPixelHeight) = (renderedPixelHeight, renderedPixelWidth);
+
+        page.SetNativeSize(renderedPixelWidth, renderedPixelHeight, dpi);
     }
 
     private static Bitmap DecodeBitmap(byte[] pngBytes)
@@ -641,49 +891,14 @@ public partial class MainWindowViewModel : ObservableObject
             page.FullImage = null;
     }
 
-    /// <summary>
-    /// Drops every primed page's raw bytes - called whenever zoom or rotation changes, since a
-    /// page rasterized at the old DPI/orientation is no longer valid. Pages fall back to a fresh
-    /// PDFium render (via the existing debounce/prefetch pipeline) the next time they're prepared.
-    /// </summary>
-    private void InvalidatePrimedBytes()
+    private void CancelActivePageRenders()
     {
-        Array.Clear(_pageRasterBytes);
-    }
-
-    private void DebounceRerenderPreparedPages()
-    {
-        _zoomDebounceCts?.Cancel();
-        _zoomDebounceCts?.Dispose();
-        _zoomDebounceCts = new CancellationTokenSource();
-        var token = _zoomDebounceCts.Token;
-
-        _ = Task.Run(async () =>
-        {
-            try
-            {
-                await Task.Delay(150, token);
-            }
-            catch (TaskCanceledException)
-            {
-                return;
-            }
-
-            if (token.IsCancellationRequested) return;
-            foreach (var index in _preparedIndices.ToArray())
-            {
-                if (token.IsCancellationRequested) return;
-                await RequestPageRenderAsync(index);
-            }
-        }, token);
-    }
-
-    private void CancelAllRenders()
-    {
-        foreach (var cts in _renderTokens.Values)
+        foreach (var (index, cts) in _renderTokens.ToArray())
         {
             cts.Cancel();
             cts.Dispose();
+            if (index >= 0 && index < Pages.Count)
+                Pages[index].IsRendering = false;
         }
         _renderTokens.Clear();
 
@@ -693,9 +908,12 @@ public partial class MainWindowViewModel : ObservableObject
             cts.Dispose();
         }
         _prepareDebounceTokens.Clear();
+    }
 
+    private void CancelAllRenders()
+    {
+        CancelActivePageRenders();
         _preparedIndices.Clear();
-        _zoomDebounceCts?.Cancel();
     }
 
     public void UpdateCurrentPageFromScrollOffset(double verticalOffset)

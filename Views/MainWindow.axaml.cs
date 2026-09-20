@@ -25,14 +25,15 @@ public partial class MainWindow : Window
             }
         };
 
-        Opened += (_, _) =>
-        {
-            if (DataContext is MainWindowViewModel vm)
-                vm.RenderScaling = RenderScaling;
-        };
-
         AddHandler(DragDrop.DropEvent, OnDrop);
         AddHandler(DragDrop.DragOverEvent, OnDragOver);
+
+        // Capture Ctrl+wheel during tunnelling, before ListBox/ScrollViewer can consume the
+        // wheel event for normal scrolling. Plain wheel is left untouched and keeps scrolling.
+        PageScrollViewer.AddHandler(
+            InputElement.PointerWheelChangedEvent,
+            PageScrollViewerPointerWheelChanged,
+            RoutingStrategies.Tunnel);
 
         // Tunnel (not bubble) so this runs *before* PagesList - a focused ListBox has its own
         // built-in Up/Down = "move selection" behaviour, which would otherwise intercept the
@@ -121,9 +122,8 @@ public partial class MainWindow : Window
 
     private void ThumbnailPressed(object? sender, PointerPressedEventArgs e)
     {
-        // The sidebar rail fills in progressively during priming (see IsPriming in the view) so
-        // it stays alive/visible instead of a dead loading screen, but the main page list itself
-        // is still hidden at that point - ignore taps until it's actually there to scroll to.
+        // Ignore taps only until the first full-quality page has revealed the native reader.
+        // After that, thumbnails/pages may continue filling in progressively in the background.
         if (sender is Control { Tag: int index } && DataContext is MainWindowViewModel vm && vm.IsInteractive)
             vm.GoToPage(index + 1);
     }
@@ -193,10 +193,9 @@ public partial class MainWindow : Window
                 if (vm.PrintCommand.CanExecute(null)) vm.PrintCommand.Execute(null);
                 e.Handled = true;
                 break;
-            // Zoom shortcuts are gated on IsInteractive (not just HasDocument): changing zoom
-            // while the priming pass is still running would invalidate _pageRasterBytes mid-loop
-            // (see OnZoomChanged/InvalidatePrimedBytes), which is exactly the kind of half-primed
-            // state the priming pass exists to avoid ever showing.
+            // Zoom shortcuts are gated until the first page is ready. Once the reader is visible,
+            // zooming is safe even while background preparation is running: the view model cancels
+            // stale work, bumps its render revision, and restarts the low-priority pass.
             case Key.D0 or Key.NumPad0 when vm.IsInteractive:
                 vm.ResetZoomCommand.Execute(null);
                 e.Handled = true;
@@ -215,10 +214,18 @@ public partial class MainWindow : Window
     private void PageScrollViewerPointerWheelChanged(object? sender, PointerWheelEventArgs e)
     {
         if (DataContext is not MainWindowViewModel vm || !vm.IsInteractive) return;
-        if (!e.KeyModifiers.HasFlag(KeyModifiers.Control)) return;
 
-        if (e.Delta.Y > 0) vm.ZoomInCommand.Execute(null);
-        else if (e.Delta.Y < 0) vm.ZoomOutCommand.Execute(null);
+        var zoomModifier = e.KeyModifiers.HasFlag(KeyModifiers.Control) ||
+                           e.KeyModifiers.HasFlag(KeyModifiers.Meta);
+        if (!zoomModifier) return;
+
+        // Native-reader convention: Ctrl+wheel up zooms in; Ctrl+wheel down zooms out.
+        // Normal wheel events are not handled here, so vertical scrolling keeps working.
+        if (e.Delta.Y > 0)
+            vm.ZoomInCommand.Execute(null);
+        else if (e.Delta.Y < 0)
+            vm.ZoomOutCommand.Execute(null);
+
         e.Handled = true;
     }
 

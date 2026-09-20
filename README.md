@@ -29,7 +29,7 @@
 
 ---
 
-Most PDF readers are either a browser tab away from your data, or a bloated installer full of things you didn't ask for. **VunLerDoc** is neither: a small, native, 100% offline desktop app that opens a PDF and gets out of your way — continuous smooth scrolling, real re-rasterized zoom instead of a blurry stretched image, and native printing on both Windows and Linux.
+Most PDF readers are either a browser tab away from your data, or a bloated installer full of things you didn't ask for. **VunLerDoc** is neither: a small, native, 100% offline desktop app with an Avalonia desktop interface and PDFium rendering — no embedded browser/CEF PDF viewer. It opens page 1 at full quality first, keeps the document usable immediately, and progressively prepares the remaining pages in the background.
 
 If you find it useful, drop a ⭐ on the repo — it really helps the project grow!
 
@@ -75,12 +75,12 @@ On first launch, VunLerDoc registers itself in your OS's "Open with" menu for `.
 
 | | |
 |---|---|
-| ⚡ **Continuous virtualized scrolling** | Only the pages actually on screen are rendered, so even huge documents open and scroll smoothly. |
-| 🔍 **True re-rasterized zoom (25%–400%)** | Every zoom level is re-rendered from the PDF's vector content via PDFium — never a stretched bitmap — so text stays sharp at any scale. |
-| 🖥️ **HiDPI-aware rendering** | Pages are rasterized at the display's real pixel density, not just its logical resolution. |
-| 🧭 **Fit width / Fit page** | Instantly frame the document to the window. |
-| 🔄 **Page rotation** | Rotate the current view in 90° increments. |
-| 🖼️ **Thumbnail sidebar** | Background-generated page thumbnails for quick visual navigation, toggle on/off anytime. |
+| ⚡ **Progressive native loading** | Page 1 is prepared first and shown quickly; remaining pages are prepared once in a low-priority background queue while the reader stays fully usable. |
+| 🔍 **Instant cached zoom (25%–400%)** | Each page gets one high-resolution 480-DPI master raster. Zoom changes only the native Avalonia layout/scaling — no PDF reload and no repeat PDFium render. |
+| 🖱️ **Ctrl + mouse wheel zoom** | Ctrl + wheel up/down zooms in/out even with the pointer over the page; plain wheel keeps scrolling vertically. |
+| 🧭 **Fit width / Fit page** | Instantly frame the document to the window without re-rendering prepared pages. |
+| 🔄 **Instant page rotation** | Rotate the view in 90° increments using the already-cached page image; rotation does not re-render the PDF. |
+| 🖼️ **Progressive thumbnail sidebar** | Thumbnails fill in as pages are prepared, with lightweight native placeholders instead of a blocked loading screen. |
 | 🖱️ **Drag & drop** | Drop a PDF straight onto the window to open it. |
 | 🖨️ **Native printing** | GDI+ at 300 DPI on Windows; on Linux the original PDF is handed directly to CUPS (`lp`) for full-fidelity printing. |
 | 🔌 **OS integration** | Registers as an "Open with" option for PDF files — Windows registry on Windows, a per-user `.desktop` entry on Linux. |
@@ -92,6 +92,7 @@ On first launch, VunLerDoc registers itself in your OS's "Open with" menu for `.
 
 * **Language**: C# / .NET 10
 * **Architecture**: MVVM, via CommunityToolkit.Mvvm
+* **Desktop UI**: Avalonia (native desktop window/control surface; no WebView/CEF PDF UI)
 * **PDF rendering**: [PDFium](https://pdfium.googlesource.com/pdfium/) (Google's PDF engine), via the PDFiumZ NuGet package
 * **Imaging**: SkiaSharp
 
