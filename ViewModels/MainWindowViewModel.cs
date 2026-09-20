@@ -84,6 +84,12 @@ public partial class MainWindowViewModel : ObservableObject
     private readonly object _pageRasterTaskLock = new();
     private Task<byte[]>?[] _pageRasterTasks = Array.Empty<Task<byte[]>?>();
 
+    // Link metadata is independent from rasterization. Each page parses its annotations/text URLs
+    // at most once per opened document and keeps the normalized hit rectangles in the page VM.
+    // Zoom/rotation only transform the hit-test coordinates; they never re-read PDFium metadata.
+    private readonly object _pageLinkTaskLock = new();
+    private Task<IReadOnlyList<PdfLinkInfo>>?[] _pageLinkTasks = Array.Empty<Task<IReadOnlyList<PdfLinkInfo>>?>();
+
     private CancellationTokenSource? _openCts;
     private CancellationTokenSource? _primingCts;
     private CancellationTokenSource? _documentRenderCts;
@@ -200,20 +206,24 @@ public partial class MainWindowViewModel : ObservableObject
         BackgroundStatusText = string.Empty;
         StatusText = "A abrir documento…";
 
-        _openCts?.Cancel();
-        _openCts?.Dispose();
+        // Swap cancellation owners atomically. Background continuations can finish while a new
+        // document is being opened, so reading the nullable fields twice (Cancel then Dispose)
+        // is unsafe: the continuation may clear the field between those two reads.
         var openOwner = new CancellationTokenSource();
-        _openCts = openOwner;
+        var previousOpenOwner = Interlocked.Exchange(ref _openCts, openOwner);
+        CancelAndDispose(previousOpenOwner);
         var openToken = openOwner.Token;
+
+        // Stop work belonging to the previous document before installing the new render lifetime.
+        // CancelBackgroundPriming also uses an atomic exchange for the same reason.
+        CancelBackgroundPriming();
+        CancelAllRenders();
 
         // The document render token deliberately lives beyond OpenPdfAsync: page rasterization
         // continues in the background and is cancelled only when a different PDF replaces it.
-        _documentRenderCts?.Cancel();
-        _documentRenderCts?.Dispose();
-        _documentRenderCts = new CancellationTokenSource();
-
-        CancelBackgroundPriming();
-        CancelAllRenders();
+        var documentRenderOwner = new CancellationTokenSource();
+        var previousDocumentRenderOwner = Interlocked.Exchange(ref _documentRenderCts, documentRenderOwner);
+        CancelAndDispose(previousDocumentRenderOwner);
 
         // Reset presentation state before the new document is installed. Zoom/rotation no longer
         // invalidate raster data; the render revision below changes only when the document does.
@@ -221,12 +231,18 @@ public partial class MainWindowViewModel : ObservableObject
         Zoom = 1.0;
         _renderRevision++;
 
+        // Detach UI-bound images before removing the old page models. Never Dispose a Bitmap
+        // that has been published through an Avalonia Image.Source: layout/render may still hold
+        // a short-lived platform reference while the binding/container is being recycled.
+        // Once detached, the managed Bitmap can be reclaimed safely by GC after Avalonia releases
+        // its last reference, avoiding Ref<IBitmapImpl> use-after-dispose crashes.
         InvalidateRenderCache();
         foreach (var oldPage in Pages)
-            oldPage.Thumbnail?.Dispose();
+            oldPage.Thumbnail = null;
         Pages.Clear();
         _pageRasterBytes = Array.Empty<byte[]?>();
         _pageRasterTasks = Array.Empty<Task<byte[]>?>();
+        _pageLinkTasks = Array.Empty<Task<IReadOnlyList<PdfLinkInfo>>?>();
         PageCount = 0;
         CurrentPage = 0;
         DocumentPath = string.Empty;
@@ -253,6 +269,7 @@ public partial class MainWindowViewModel : ObservableObject
             CurrentPage = count > 0 ? 1 : 0;
             _pageRasterBytes = new byte[]?[count];
             _pageRasterTasks = new Task<byte[]>?[count];
+            _pageLinkTasks = new Task<IReadOnlyList<PdfLinkInfo>>?[count];
             _renderCacheCapacity = 20;
 
             if (count == 0)
@@ -271,6 +288,19 @@ public partial class MainWindowViewModel : ObservableObject
 
             IsDocumentReady = true;
             IsOpeningDocument = false;
+
+            // Link metadata is tiny compared with page pixels. Start page 1 immediately so its
+            // index/URI links are interactive as soon as the native reader is revealed.
+            _ = EnsurePageLinksAsync(0);
+
+            // A newly opened document always starts on page 1. The ScrollViewer keeps its
+            // numeric offset when its ItemsSource is replaced, so setting CurrentPage alone is
+            // not sufficient: explicitly ask the view to bring the first page into view after
+            // the first full-quality render is ready. Fit/zoom operations inside the same
+            // document still preserve their current-page anchor as before.
+            CurrentPage = 1;
+            ScrollToPageRequested?.Invoke(this, 0);
+
             StatusText = $"{PageCount} {(PageCount == 1 ? "página" : "páginas")}";
 
             // Everything after page 1 is deliberately fire-and-continue UI work: the async loop
@@ -287,6 +317,9 @@ public partial class MainWindowViewModel : ObservableObject
             if (generation != _documentGeneration)
                 return;
 
+            InvalidateRenderCache();
+            foreach (var page in Pages)
+                page.Thumbnail = null;
             Pages.Clear();
             PageCount = 0;
             CurrentPage = 0;
@@ -298,20 +331,19 @@ public partial class MainWindowViewModel : ObservableObject
             IsPriming = false;
             IsDocumentReady = false;
 
-            _documentRenderCts?.Cancel();
-            _documentRenderCts?.Dispose();
-            _documentRenderCts = null;
+            var failedDocumentRenderOwner = Interlocked.Exchange(ref _documentRenderCts, null);
+            CancelAndDispose(failedDocumentRenderOwner);
         }
         finally
         {
             if (generation == _documentGeneration)
                 IsOpeningDocument = false;
 
-            if (ReferenceEquals(_openCts, openOwner))
-            {
-                _openCts = null;
+            // Only the invocation that still owns this CTS may detach/dispose it. If another
+            // OpenPdfAsync already replaced it, that newer invocation disposed this owner while
+            // swapping, so we must not touch the field or the newer CTS here.
+            if (ReferenceEquals(Interlocked.CompareExchange(ref _openCts, null, openOwner), openOwner))
                 openOwner.Dispose();
-            }
 
             PrintCommand?.NotifyCanExecuteChanged();
         }
@@ -373,12 +405,11 @@ public partial class MainWindowViewModel : ObservableObject
                         if (i == 0) RecalculateRenderCacheCapacity();
                         page.UpdateLayout(Zoom, RotationDegrees, BaseDpi);
 
-                        var previousThumbnail = page.Thumbnail;
+                        // This source is UI-bound; replace it without disposing the previous
+                        // published bitmap during an active Avalonia layout/render frame.
                         page.Thumbnail = thumbnail;
-                        previousThumbnail?.Dispose();
 
-                        CacheStore(i, full);
-                        page.FullImage = full;
+                        page.FullImage = CacheStore(i, full);
                     }
                     else if (TryGetCached(i, out var cached))
                     {
@@ -393,8 +424,7 @@ public partial class MainWindowViewModel : ObservableObject
                             return;
                         }
 
-                        CacheStore(i, full);
-                        page.FullImage = full;
+                        page.FullImage = CacheStore(i, full);
                     }
                 }
                 catch (OperationCanceledException)
@@ -413,7 +443,9 @@ public partial class MainWindowViewModel : ObservableObject
         }
         finally
         {
-            if (ReferenceEquals(_primingCts, owner))
+            // Atomically detach only if this pass still owns the field. A concurrent cancel may
+            // already have exchanged the field to null and disposed this owner.
+            if (ReferenceEquals(Interlocked.CompareExchange(ref _primingCts, null, owner), owner))
             {
                 if (!token.IsCancellationRequested && documentGeneration == _documentGeneration && renderRevision == _renderRevision)
                 {
@@ -423,7 +455,6 @@ public partial class MainWindowViewModel : ObservableObject
                 }
 
                 IsPriming = false;
-                _primingCts = null;
                 owner.Dispose();
             }
         }
@@ -441,7 +472,8 @@ public partial class MainWindowViewModel : ObservableObject
         }
 
         var owner = new CancellationTokenSource();
-        _primingCts = owner;
+        var replacedOwner = Interlocked.Exchange(ref _primingCts, owner);
+        CancelAndDispose(replacedOwner);
         IsPriming = true;
         var readyCount = _pageRasterBytes.Count(bytes => bytes is not null);
         LoadProgress = Math.Clamp(readyCount / (double)PageCount, 0, 1);
@@ -452,15 +484,33 @@ public partial class MainWindowViewModel : ObservableObject
 
     private void CancelBackgroundPriming()
     {
-        if (_primingCts is not null)
-        {
-            _primingCts.Cancel();
-            _primingCts.Dispose();
-            _primingCts = null;
-        }
+        // Detach first, then cancel/dispose the captured owner. RunPrimingPassAsync can finish at
+        // exactly the same time; exchanging the field prevents it from turning null between a
+        // field-level Cancel() and Dispose() call (the crash previously seen here).
+        var owner = Interlocked.Exchange(ref _primingCts, null);
+        CancelAndDispose(owner);
 
         IsPriming = false;
         BackgroundStatusText = string.Empty;
+    }
+
+    private static void CancelAndDispose(CancellationTokenSource? owner)
+    {
+        if (owner is null)
+            return;
+
+        try
+        {
+            owner.Cancel();
+        }
+        catch (ObjectDisposedException)
+        {
+            // Another completed continuation may already have disposed its own captured owner.
+        }
+        finally
+        {
+            owner.Dispose();
+        }
     }
 
     public void NotifyPagePrepared(int index)
@@ -468,6 +518,7 @@ public partial class MainWindowViewModel : ObservableObject
         if (index < 0 || index >= Pages.Count) return;
         _preparedIndices.Add(index);
         RequestPageRenderDebounced(index);
+        _ = EnsurePageLinksAsync(index);
 
         // Prefetch neighbours ahead of time so scrolling a page forward/back is usually an
         // instant cache hit instead of a visible low-res-then-sharp "blur" transition.
@@ -475,6 +526,69 @@ public partial class MainWindowViewModel : ObservableObject
         {
             if (index + offset < Pages.Count) _ = RequestPageRenderAsync(index + offset, isPrefetch: true);
             if (index - offset >= 0) _ = RequestPageRenderAsync(index - offset, isPrefetch: true);
+        }
+    }
+
+    /// <summary>
+    /// Parses annotations/destinations and automatically detected web URLs for one page. The
+    /// result is shared by viewport/preload/click callers and is retained for the lifetime of
+    /// the currently opened document. This does not render page pixels.
+    /// </summary>
+    public async Task EnsurePageLinksAsync(int index)
+    {
+        if (index < 0 || index >= Pages.Count)
+            return;
+
+        var page = Pages[index];
+        if (page.LinksLoaded)
+            return;
+
+        var generation = _documentGeneration;
+        var documentOwner = Volatile.Read(ref _documentRenderCts);
+        if (documentOwner is null)
+            return;
+
+        CancellationToken token;
+        try
+        {
+            token = documentOwner.Token;
+        }
+        catch (ObjectDisposedException)
+        {
+            return;
+        }
+
+        Task<IReadOnlyList<PdfLinkInfo>> sharedTask;
+        lock (_pageLinkTaskLock)
+        {
+            if (generation != _documentGeneration || index >= _pageLinkTasks.Length)
+                return;
+
+            sharedTask = _pageLinkTasks[index]
+                         ??= _pdfService.GetPageLinksAsync(index, token);
+        }
+
+        try
+        {
+            var links = await sharedTask;
+            if (token.IsCancellationRequested || generation != _documentGeneration ||
+                index < 0 || index >= Pages.Count)
+            {
+                return;
+            }
+
+            Pages[index].SetLinks(links);
+        }
+        catch (OperationCanceledException)
+        {
+            // Opening another document invalidates this page's metadata.
+        }
+        catch
+        {
+            // Link parsing must never make a valid PDF unreadable. Mark the page as parsed with
+            // no links; the raster/native-reader path stays fully functional.
+            if (generation == _documentGeneration && index >= 0 && index < Pages.Count)
+                Pages[index].SetLinks(Array.Empty<PdfLinkInfo>());
         }
     }
 
@@ -552,13 +666,10 @@ public partial class MainWindowViewModel : ObservableObject
             _renderTokens.Remove(index);
         }
 
-        // Deliberately NOT nulling the bitmap here. It stays alive in the LRU cache (see
-        // CacheStore) and stays bound/visible on the page too - a routine virtualization
-        // recycle (which fires constantly during smooth scrolling, for pages that are still
-        // effectively on/near screen) must never downgrade an already-sharp page to the tiny
-        // stretched thumbnail. The bitmap is only cleared from the page at the moment it is
-        // actually disposed - see EvictExcess and CacheStore - so the UI never ends up holding
-        // a dangling reference to a disposed bitmap.
+        // Deliberately NOT nulling the bitmap here. Routine virtualization fires constantly
+        // during smooth scrolling and must not downgrade an already-sharp page just because its
+        // container is being recycled. EvictExcess may detach a genuinely old page later, but it
+        // never manually disposes an image that has already been published to Avalonia.
     }
 
     /// <param name="isPrefetch">
@@ -622,12 +733,12 @@ public partial class MainWindowViewModel : ObservableObject
                 if (index == 0) RecalculateRenderCacheCapacity();
                 page.UpdateLayout(Zoom, RotationDegrees, BaseDpi);
 
-                var previousThumbnail = page.Thumbnail;
+                // Never manually Dispose an image that has been bound to Avalonia Image.Source.
+                // Binding replacement is synchronous at the property level, but the platform
+                // renderer can still hold the previous bitmap through the current layout frame.
                 page.Thumbnail = thumbnail;
-                previousThumbnail?.Dispose();
 
-                CacheStore(index, full);
-                page.FullImage = full;
+                page.FullImage = CacheStore(index, full);
             }
             else
             {
@@ -638,8 +749,7 @@ public partial class MainWindowViewModel : ObservableObject
                     return;
                 }
 
-                CacheStore(index, bitmap);
-                page.FullImage = bitmap;
+                page.FullImage = CacheStore(index, bitmap);
             }
         }
         catch (OperationCanceledException)
@@ -678,9 +788,25 @@ public partial class MainWindowViewModel : ObservableObject
             if (_pageRasterTasks[index] is { } existing)
                 return existing.WaitAsync(waitCancellationToken);
 
-            var documentToken = _documentRenderCts?.Token
+            // Read the owner once. A new OpenPdfAsync can atomically replace/cancel/dispose the
+            // field while an old viewport/background request is arriving here.
+            var documentOwner = Volatile.Read(ref _documentRenderCts)
                 ?? throw new InvalidOperationException("No PDF document render lifetime is active.");
+
+            CancellationToken documentToken;
+            try
+            {
+                documentToken = documentOwner.Token;
+            }
+            catch (ObjectDisposedException)
+            {
+                throw new OperationCanceledException("The PDF document render lifetime has ended.");
+            }
+
             var generation = _documentGeneration;
+            if (documentToken.IsCancellationRequested ||
+                !ReferenceEquals(documentOwner, Volatile.Read(ref _documentRenderCts)))
+                throw new OperationCanceledException("The PDF document changed while the page render was being queued.");
 
             sharedTask = RenderMasterPageOnceAsync(index, highPriority, generation, documentToken);
             _pageRasterTasks[index] = sharedTask;
@@ -820,21 +946,26 @@ public partial class MainWindowViewModel : ObservableObject
         return false;
     }
 
-    private void CacheStore(int index, Bitmap bitmap)
+    /// <summary>
+    /// Stores a decoded bitmap and returns the canonical instance for this page. If foreground
+    /// and background decoding finish at nearly the same time, the first bitmap wins and the
+    /// duplicate (which has never been published to Image.Source) can be disposed safely.
+    /// A bitmap already published to the UI is never disposed here.
+    /// </summary>
+    private Bitmap CacheStore(int index, Bitmap bitmap)
     {
-        if (_renderCache.TryGetValue(index, out var previous) && !ReferenceEquals(previous, bitmap))
+        if (_renderCache.TryGetValue(index, out var existing))
         {
-            previous.Dispose();
-            // The caller (RequestPageRenderAsync) assigns the new bitmap to page.FullImage right
-            // after this returns, but guard against a stale reference to the just-disposed one
-            // in the meantime - see the comment on EvictExcess below for why this matters.
-            if (index < Pages.Count && ReferenceEquals(Pages[index].FullImage, previous))
-                Pages[index].FullImage = null;
+            CacheTouch(index);
+            if (!ReferenceEquals(existing, bitmap))
+                bitmap.Dispose(); // Safe: this duplicate was never assigned to a page property.
+            return existing;
         }
 
         _renderCache[index] = bitmap;
         CacheTouch(index);
         EvictExcess();
+        return bitmap;
     }
 
     private void CacheTouch(int index)
@@ -845,10 +976,15 @@ public partial class MainWindowViewModel : ObservableObject
     }
 
     /// <summary>
-    /// Evicts least-recently-used entries down to <see cref="_renderCacheCapacity"/>, but never a
-    /// page currently on screen. Note this only reclaims decoded-bitmap memory - the page's raw
-    /// bytes stay in <see cref="_pageRasterBytes"/>, so an evicted page still redisplays via a
-    /// cheap in-memory decode rather than a fresh PDFium render.
+    /// Evicts least-recently-used decoded entries down to <see cref="_renderCacheCapacity"/>, but
+    /// never a page currently on screen. The master PNG bytes remain in
+    /// <see cref="_pageRasterBytes"/>, so revisiting an evicted page only performs an in-memory
+    /// decode and never another PDFium render.
+    ///
+    /// IMPORTANT: do not Dispose an evicted Bitmap here. It may have been published to an
+    /// Avalonia Image.Source and a recycled container can still hold the platform bitmap for the
+    /// remainder of the current layout/render frame. Removing all managed references lets GC
+    /// reclaim it only after Avalonia has truly released it, preventing ObjectDisposedException.
     /// </summary>
     private void EvictExcess()
     {
@@ -858,18 +994,14 @@ public partial class MainWindowViewModel : ObservableObject
             var previous = node.Previous;
             if (!_preparedIndices.Contains(node.Value) && !PinnedPageIndices.Contains(node.Value))
             {
-                if (_renderCache.Remove(node.Value, out var bitmap))
+                if (_renderCache.Remove(node.Value, out var bitmap) &&
+                    node.Value < Pages.Count &&
+                    ReferenceEquals(Pages[node.Value].FullImage, bitmap))
                 {
-                    bitmap.Dispose();
-
-                    // A page stays showing its last good bitmap after being scrolled off-screen
-                    // (see NotifyPageCleared) - now that the LRU cache has actually reclaimed it,
-                    // drop the page's reference too so it falls back to the thumbnail instead of
-                    // holding a disposed bitmap. Scrolling back re-decodes it from the still-primed
-                    // bytes (fast, no PDFium call) rather than a fresh render, same as a cache hit.
-                    if (node.Value < Pages.Count && ReferenceEquals(Pages[node.Value].FullImage, bitmap))
-                        Pages[node.Value].FullImage = null;
+                    // Detach first. Do not manually dispose a UI-published Bitmap.
+                    Pages[node.Value].FullImage = null;
                 }
+
                 _cacheNodes.Remove(node.Value);
                 _cacheUsageOrder.Remove(node);
             }
@@ -879,16 +1011,15 @@ public partial class MainWindowViewModel : ObservableObject
 
     private void InvalidateRenderCache()
     {
-        foreach (var bitmap in _renderCache.Values)
-            bitmap.Dispose();
+        // Detach UI properties before dropping cache references. Published Avalonia Bitmaps are
+        // intentionally left to GC/ref-counting rather than manually disposed while controls may
+        // still be measuring or rendering them.
+        foreach (var page in Pages)
+            page.FullImage = null;
+
         _renderCache.Clear();
         _cacheNodes.Clear();
         _cacheUsageOrder.Clear();
-
-        // Bitmaps just got disposed above - drop any dangling reference so the UI falls back
-        // to the (separately-owned) thumbnail instead of drawing a disposed bitmap.
-        foreach (var page in Pages)
-            page.FullImage = null;
     }
 
     private void CancelActivePageRenders()
@@ -916,15 +1047,23 @@ public partial class MainWindowViewModel : ObservableObject
         _preparedIndices.Clear();
     }
 
-    public void UpdateCurrentPageFromScrollOffset(double verticalOffset)
+    public void UpdateCurrentPageFromScrollOffset(
+        double verticalOffset,
+        double viewportHeight,
+        double topPadding = 0)
     {
         if (Pages.Count == 0) return;
 
-        double accumulated = 0;
+        // Track the page occupying the centre of the viewport rather than the first page whose
+        // slot touches the top edge. This mirrors what the user perceives as the active page and
+        // makes the thumbnail rail follow scrolling without jumping early between two pages.
+        var viewportAnchor = verticalOffset + Math.Max(0, viewportHeight) / 2.0;
+        double accumulated = Math.Max(0, topPadding);
+
         foreach (var page in Pages)
         {
             var slot = page.DisplayHeight + ItemSpacing;
-            if (accumulated + slot > verticalOffset + 1)
+            if (viewportAnchor < accumulated + slot)
             {
                 if (CurrentPage != page.PageNumber)
                     CurrentPage = page.PageNumber;

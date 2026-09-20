@@ -92,48 +92,63 @@
     <Grid Grid.Row="1" ColumnDefinitions="Auto,*">
 
       <Border Grid.Column="0" Background="#2B2D2F" Width="176" IsVisible="{Binding IsSidebarVisible}">
-        <ScrollViewer HorizontalScrollBarVisibility="Disabled" VerticalScrollBarVisibility="Auto">
-          <ItemsControl ItemsSource="{Binding Pages}" Margin="12">
-            <ItemsControl.ItemsPanel>
-              <ItemsPanelTemplate>
-                <StackPanel Orientation="Vertical" Spacing="14" />
-              </ItemsPanelTemplate>
-            </ItemsControl.ItemsPanel>
-            <ItemsControl.ItemTemplate>
-              <DataTemplate x:DataType="vm:PdfPageItemViewModel">
-                <StackPanel Spacing="4" HorizontalAlignment="Center" Tag="{Binding Index}" PointerPressed="ThumbnailPressed">
-                  <Border Background="#F8F9FA" BorderBrush="#4A4E51" BorderThickness="1" Padding="0" Width="142" Height="184">
-                    <Panel>
-                      <Viewbox Stretch="Uniform">
-                        <Grid Width="{Binding DisplayWidth}" Height="{Binding DisplayHeight}">
-                          <Image Source="{Binding Thumbnail}"
-                                 Width="{Binding UnrotatedDisplayWidth}"
-                                 Height="{Binding UnrotatedDisplayHeight}"
-                                 HorizontalAlignment="Center"
-                                 VerticalAlignment="Center"
-                                 Stretch="Fill"
-                                 RenderTransformOrigin="50%,50%"
-                                 RenderOptions.BitmapInterpolationMode="HighQuality">
-                            <Image.RenderTransform>
-                              <RotateTransform Angle="{Binding RotationDegrees}" />
-                            </Image.RenderTransform>
-                          </Image>
-                        </Grid>
-                      </Viewbox>
-                      <Border IsVisible="{Binding IsThumbnailPlaceholderVisible}" Background="#F1F3F4">
-                        <StackPanel HorizontalAlignment="Center" VerticalAlignment="Center" Spacing="7">
-                          <ProgressBar Width="72" Height="3" IsIndeterminate="True" />
-                          <TextBlock Text="{Binding PageNumber}" Foreground="#80868B" FontSize="10" HorizontalAlignment="Center" />
-                        </StackPanel>
-                      </Border>
-                    </Panel>
-                  </Border>
-                  <TextBlock Text="{Binding PageNumber}" Foreground="#B7BABD" FontSize="11" HorizontalAlignment="Center" />
-                </StackPanel>
-              </DataTemplate>
-            </ItemsControl.ItemTemplate>
-          </ItemsControl>
-        </ScrollViewer>
+        <ListBox Name="ThumbnailList"
+                 ItemsSource="{Binding Pages}"
+                 Background="Transparent"
+                 BorderThickness="0"
+                 Padding="12"
+                 SelectionMode="Single"
+                 ScrollViewer.HorizontalScrollBarVisibility="Disabled"
+                 ScrollViewer.VerticalScrollBarVisibility="Auto">
+          <ListBox.Styles>
+            <Style Selector="ListBoxItem">
+              <Setter Property="Padding" Value="4" />
+              <Setter Property="Margin" Value="0,0,0,10" />
+              <Setter Property="HorizontalContentAlignment" Value="Center" />
+            </Style>
+            <Style Selector="ListBoxItem:selected">
+              <Setter Property="Background" Value="#4A4E51" />
+            </Style>
+          </ListBox.Styles>
+          <ListBox.ItemsPanel>
+            <ItemsPanelTemplate>
+              <VirtualizingStackPanel Orientation="Vertical" />
+            </ItemsPanelTemplate>
+          </ListBox.ItemsPanel>
+          <ListBox.ItemTemplate>
+            <DataTemplate x:DataType="vm:PdfPageItemViewModel">
+              <StackPanel Spacing="4" HorizontalAlignment="Center" Tag="{Binding Index}" PointerPressed="ThumbnailPressed">
+                <Border Background="#F8F9FA" BorderBrush="#4A4E51" BorderThickness="1" Padding="0" Width="142" Height="184">
+                  <Panel>
+                    <Viewbox Stretch="Uniform">
+                      <Grid Width="{Binding DisplayWidth}" Height="{Binding DisplayHeight}">
+                        <Image Source="{Binding Thumbnail}"
+                               Width="{Binding UnrotatedDisplayWidth}"
+                               Height="{Binding UnrotatedDisplayHeight}"
+                               HorizontalAlignment="Center"
+                               VerticalAlignment="Center"
+                               Stretch="Fill"
+                               RenderTransformOrigin="50%,50%"
+                               RenderOptions.BitmapInterpolationMode="HighQuality">
+                          <Image.RenderTransform>
+                            <RotateTransform Angle="{Binding RotationDegrees}" />
+                          </Image.RenderTransform>
+                        </Image>
+                      </Grid>
+                    </Viewbox>
+                    <Border IsVisible="{Binding IsThumbnailPlaceholderVisible}" Background="#F1F3F4">
+                      <StackPanel HorizontalAlignment="Center" VerticalAlignment="Center" Spacing="7">
+                        <ProgressBar Width="72" Height="3" IsIndeterminate="True" />
+                        <TextBlock Text="{Binding PageNumber}" Foreground="#80868B" FontSize="10" HorizontalAlignment="Center" />
+                      </StackPanel>
+                    </Border>
+                  </Panel>
+                </Border>
+                <TextBlock Text="{Binding PageNumber}" Foreground="#B7BABD" FontSize="11" HorizontalAlignment="Center" />
+              </StackPanel>
+            </DataTemplate>
+          </ListBox.ItemTemplate>
+        </ListBox>
       </Border>
 
       <Grid Grid.Column="1" Background="#525659">
@@ -161,7 +176,10 @@
                         BoxShadow="0 6 18 0 #33000000"
                         Width="{Binding DisplayWidth}"
                         Height="{Binding DisplayHeight}"
-                        Margin="0,0,0,16">
+                        Margin="0,0,0,16"
+                        PointerPressed="PdfPagePointerPressed"
+                        PointerMoved="PdfPagePointerMoved"
+                        PointerExited="PdfPagePointerExited">
                   <Panel>
                     <Image Source="{Binding DisplayImage}"
                            Width="{Binding UnrotatedDisplayWidth}"
