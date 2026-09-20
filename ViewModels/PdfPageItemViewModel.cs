@@ -17,14 +17,32 @@ public partial class PdfPageItemViewModel : ObservableObject
     [ObservableProperty] private Bitmap? _fullImage;
     [ObservableProperty] private double _displayWidth;
     [ObservableProperty] private double _displayHeight;
+    [ObservableProperty] private double _unrotatedDisplayWidth;
+    [ObservableProperty] private double _unrotatedDisplayHeight;
+    [ObservableProperty] private int _rotationDegrees;
     [ObservableProperty] private bool _isRendering;
     [ObservableProperty] private bool _hasNativeSize;
 
-    /// <summary>Full-quality render when ready, otherwise the low-res placeholder.</summary>
+    /// <summary>Full-quality render when ready, otherwise the low-res thumbnail.</summary>
     public Bitmap? DisplayImage => FullImage ?? Thumbnail;
+    public bool HasDisplayImage => DisplayImage is not null;
+    public bool IsPlaceholderVisible => !HasDisplayImage;
+    public bool IsThumbnailPlaceholderVisible => Thumbnail is null;
 
-    partial void OnFullImageChanged(Bitmap? value) => OnPropertyChanged(nameof(DisplayImage));
-    partial void OnThumbnailChanged(Bitmap? value) => OnPropertyChanged(nameof(DisplayImage));
+    partial void OnFullImageChanged(Bitmap? value)
+    {
+        OnPropertyChanged(nameof(DisplayImage));
+        OnPropertyChanged(nameof(HasDisplayImage));
+        OnPropertyChanged(nameof(IsPlaceholderVisible));
+    }
+
+    partial void OnThumbnailChanged(Bitmap? value)
+    {
+        OnPropertyChanged(nameof(DisplayImage));
+        OnPropertyChanged(nameof(HasDisplayImage));
+        OnPropertyChanged(nameof(IsPlaceholderVisible));
+        OnPropertyChanged(nameof(IsThumbnailPlaceholderVisible));
+    }
 
     public PdfPageItemViewModel(int index)
     {
@@ -48,13 +66,23 @@ public partial class PdfPageItemViewModel : ObservableObject
     /// </summary>
     public void UpdateLayout(double zoom, int rotationDegrees, double baseDpi = 96.0)
     {
-        var widthPoints = NativeWidthPoints;
-        var heightPoints = NativeHeightPoints;
-        var rotated = ((rotationDegrees % 360) + 360) % 360 is 90 or 270;
-        if (rotated)
-            (widthPoints, heightPoints) = (heightPoints, widthPoints);
+        var normalizedRotation = ((rotationDegrees % 360) + 360) % 360;
+        RotationDegrees = normalizedRotation;
 
-        DisplayWidth = Math.Max(1, widthPoints / 72.0 * baseDpi * zoom);
-        DisplayHeight = Math.Max(1, heightPoints / 72.0 * baseDpi * zoom);
+        // Keep the source image's dimensions independent of rotation. The view rotates this
+        // already-loaded bitmap around its centre; only the outer page slot swaps width/height.
+        UnrotatedDisplayWidth = Math.Max(1, NativeWidthPoints / 72.0 * baseDpi * zoom);
+        UnrotatedDisplayHeight = Math.Max(1, NativeHeightPoints / 72.0 * baseDpi * zoom);
+
+        if (normalizedRotation is 90 or 270)
+        {
+            DisplayWidth = UnrotatedDisplayHeight;
+            DisplayHeight = UnrotatedDisplayWidth;
+        }
+        else
+        {
+            DisplayWidth = UnrotatedDisplayWidth;
+            DisplayHeight = UnrotatedDisplayHeight;
+        }
     }
 }

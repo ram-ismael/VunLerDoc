@@ -102,9 +102,31 @@
             <ItemsControl.ItemTemplate>
               <DataTemplate x:DataType="vm:PdfPageItemViewModel">
                 <StackPanel Spacing="4" HorizontalAlignment="Center" Tag="{Binding Index}" PointerPressed="ThumbnailPressed">
-                  <Border Background="White" BorderBrush="#4A4E51" BorderThickness="1" Padding="0" MaxWidth="150">
-                    <Image Source="{Binding Thumbnail}"
-                           Stretch="Uniform" MaxWidth="148" />
+                  <Border Background="#F8F9FA" BorderBrush="#4A4E51" BorderThickness="1" Padding="0" Width="142" Height="184">
+                    <Panel>
+                      <Viewbox Stretch="Uniform">
+                        <Grid Width="{Binding DisplayWidth}" Height="{Binding DisplayHeight}">
+                          <Image Source="{Binding Thumbnail}"
+                                 Width="{Binding UnrotatedDisplayWidth}"
+                                 Height="{Binding UnrotatedDisplayHeight}"
+                                 HorizontalAlignment="Center"
+                                 VerticalAlignment="Center"
+                                 Stretch="Fill"
+                                 RenderTransformOrigin="50%,50%"
+                                 RenderOptions.BitmapInterpolationMode="HighQuality">
+                            <Image.RenderTransform>
+                              <RotateTransform Angle="{Binding RotationDegrees}" />
+                            </Image.RenderTransform>
+                          </Image>
+                        </Grid>
+                      </Viewbox>
+                      <Border IsVisible="{Binding IsThumbnailPlaceholderVisible}" Background="#F1F3F4">
+                        <StackPanel HorizontalAlignment="Center" VerticalAlignment="Center" Spacing="7">
+                          <ProgressBar Width="72" Height="3" IsIndeterminate="True" />
+                          <TextBlock Text="{Binding PageNumber}" Foreground="#80868B" FontSize="10" HorizontalAlignment="Center" />
+                        </StackPanel>
+                      </Border>
+                    </Panel>
                   </Border>
                   <TextBlock Text="{Binding PageNumber}" Foreground="#B7BABD" FontSize="11" HorizontalAlignment="Center" />
                 </StackPanel>
@@ -119,7 +141,6 @@
                       HorizontalScrollBarVisibility="Auto"
                       VerticalScrollBarVisibility="Auto"
                       ScrollChanged="PageScrollViewerScrollChanged"
-                      PointerWheelChanged="PageScrollViewerPointerWheelChanged"
                       IsVisible="{Binding IsDocumentReady}">
           <ListBox Name="PagesList"
                     ItemsSource="{Binding Pages}"
@@ -143,12 +164,35 @@
                         Margin="0,0,0,16">
                   <Panel>
                     <Image Source="{Binding DisplayImage}"
+                           Width="{Binding UnrotatedDisplayWidth}"
+                           Height="{Binding UnrotatedDisplayHeight}"
+                           HorizontalAlignment="Center"
+                           VerticalAlignment="Center"
                            Stretch="Fill"
-                           RenderOptions.BitmapInterpolationMode="HighQuality" />
+                           RenderTransformOrigin="50%,50%"
+                           RenderOptions.BitmapInterpolationMode="HighQuality">
+                      <Image.RenderTransform>
+                        <RotateTransform Angle="{Binding RotationDegrees}" />
+                      </Image.RenderTransform>
+                    </Image>
+
+                    <Border IsVisible="{Binding IsPlaceholderVisible}" Background="#F8F9FA">
+                      <StackPanel HorizontalAlignment="Center" VerticalAlignment="Center" Spacing="9">
+                        <ProgressBar Width="110" Height="3" IsIndeterminate="True" />
+                        <StackPanel Orientation="Horizontal" HorizontalAlignment="Center" Spacing="4">
+                          <TextBlock Text="A preparar página" Foreground="#74787C" FontSize="12" />
+                          <TextBlock Text="{Binding PageNumber}" Foreground="#74787C" FontSize="12" />
+                        </StackPanel>
+                      </StackPanel>
+                    </Border>
+
                     <Border IsVisible="{Binding IsRendering}"
-                            Background="#18000000"
-                            HorizontalAlignment="Right" VerticalAlignment="Bottom" Margin="8">
-                      <TextBlock Text="…" Foreground="#666" FontSize="14" Margin="6,2" />
+                            Background="#D9FFFFFF"
+                            BorderBrush="#22000000"
+                            BorderThickness="1"
+                            CornerRadius="12"
+                            HorizontalAlignment="Right" VerticalAlignment="Bottom" Margin="10" Padding="8,4">
+                      <TextBlock Text="A atualizar…" Foreground="#5F6368" FontSize="11" />
                     </Border>
                   </Panel>
                 </Border>
@@ -163,18 +207,35 @@
           <Button Content="Abrir PDF" Click="OpenPdfClick" HorizontalAlignment="Center" Margin="0,24,0,0" Padding="24,11" />
         </StackPanel>
 
-        <!-- Full-document priming: shown from the moment a file is opened until every page has
-             been rasterized once. The page list only appears once IsDocumentReady flips true
-             (above), so scrolling never has to fall back to a low-resolution placeholder. -->
-        <StackPanel IsVisible="{Binding IsPriming}" HorizontalAlignment="Center" VerticalAlignment="Center" Width="300" Spacing="14">
-          <TextBlock Text="{Binding DocumentName}"
-                     Foreground="#E8EAED" FontSize="15" FontWeight="Medium"
-                     HorizontalAlignment="Center" TextTrimming="CharacterEllipsis" MaxWidth="300" />
-          <ProgressBar Minimum="0" Maximum="1" Value="{Binding LoadProgress}" Height="6" CornerRadius="3" Foreground="#8AB4F8" Background="#3C4043" />
-          <TextBlock Text="{Binding StatusText}" Foreground="#9AA0A6" FontSize="12" HorizontalAlignment="Center" />
-        </StackPanel>
+        <!-- Native first-paint loader: it only covers the reader while page 1 is being prepared. -->
+        <Border IsVisible="{Binding IsOpeningDocument}" Background="#525659">
+          <Border Background="#E8323639"
+                  BorderBrush="#3344484B" BorderThickness="1"
+                  CornerRadius="12" Padding="22,18" Width="330"
+                  HorizontalAlignment="Center" VerticalAlignment="Center">
+            <StackPanel Spacing="12">
+              <TextBlock Text="{Binding DocumentName}"
+                         Foreground="#F1F3F4" FontSize="14" FontWeight="SemiBold"
+                         HorizontalAlignment="Center" TextTrimming="CharacterEllipsis" MaxWidth="286" />
+              <ProgressBar IsIndeterminate="True" Height="4" CornerRadius="2" Foreground="#8AB4F8" Background="#45494D" />
+              <TextBlock Text="{Binding StatusText}" Foreground="#BDC1C6" FontSize="11" HorizontalAlignment="Center" />
+            </StackPanel>
+          </Border>
+        </Border>
 
-        <Border Background="#B0101418" CornerRadius="10" Padding="16,10" HorizontalAlignment="Center" VerticalAlignment="Top" Margin="0,12" IsVisible="{Binding IsBusy}">
+        <!-- Once page 1 is visible, this compact chip reports low-priority background preparation
+             without blocking scrolling, zooming, navigation, printing or the thumbnail rail. -->
+        <Border IsVisible="{Binding IsPriming}"
+                Background="#E8323639" BorderBrush="#3344484B" BorderThickness="1"
+                CornerRadius="12" Padding="12,8" Width="310"
+                HorizontalAlignment="Center" VerticalAlignment="Top" Margin="0,12">
+          <StackPanel Spacing="6">
+            <TextBlock Text="{Binding BackgroundStatusText}" Foreground="#E8EAED" FontSize="11" HorizontalAlignment="Center" />
+            <ProgressBar Minimum="0" Maximum="1" Value="{Binding LoadProgress}" Height="3" CornerRadius="2" Foreground="#8AB4F8" Background="#45494D" />
+          </StackPanel>
+        </Border>
+
+        <Border Background="#E8323639" CornerRadius="10" Padding="16,10" HorizontalAlignment="Center" VerticalAlignment="Top" Margin="0,58,0,0" IsVisible="{Binding IsBusy}">
           <TextBlock Text="A processar…" Foreground="White" />
         </Border>
 

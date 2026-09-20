@@ -36,13 +36,24 @@ public sealed class PdfiumDocumentService : IPdfDocumentService
     /// actually looking at (or printing), so it must never queue behind background thumbnail
     /// generation - see <see cref="PriorityGate"/>.
     /// </summary>
-    public async Task<byte[]> RenderPageAsync(int pageIndex, float dpi, int rotationDegrees = 0, CancellationToken cancellationToken = default)
+    public Task<byte[]> RenderPageAsync(int pageIndex, float dpi, int rotationDegrees = 0, CancellationToken cancellationToken = default)
+        => RenderPageCoreAsync(pageIndex, dpi, rotationDegrees, highPriority: true, cancellationToken);
+
+    public Task<byte[]> RenderPageBackgroundAsync(int pageIndex, float dpi, int rotationDegrees = 0, CancellationToken cancellationToken = default)
+        => RenderPageCoreAsync(pageIndex, dpi, rotationDegrees, highPriority: false, cancellationToken);
+
+    private async Task<byte[]> RenderPageCoreAsync(
+        int pageIndex,
+        float dpi,
+        int rotationDegrees,
+        bool highPriority,
+        CancellationToken cancellationToken)
     {
         EnsurePageIndex(pageIndex);
         dpi = Math.Clamp(dpi, 24f, 1200f);
         var normalizedRotation = ((rotationDegrees % 360) + 360) % 360;
 
-        using (await _gate.EnterAsync(highPriority: true, cancellationToken))
+        using (await _gate.EnterAsync(highPriority, cancellationToken))
         {
             cancellationToken.ThrowIfCancellationRequested();
             return await Task.Run(() =>
