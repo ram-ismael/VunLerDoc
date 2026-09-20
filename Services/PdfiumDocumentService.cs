@@ -1,3 +1,5 @@
+using System.Runtime.InteropServices;
+using System.Text;
 using PDFiumZ;
 using SkiaSharp;
 
@@ -12,6 +14,7 @@ namespace VunLerDoc.Services;
 public sealed class PdfiumDocumentService : IPdfDocumentService
 {
     private PdfDocument? _document;
+    private IntPtr _linkDocument;
     private readonly PriorityGate _gate = new();
 
     public int PageCount => _document?.PageCount ?? 0;
@@ -24,9 +27,42 @@ public sealed class PdfiumDocumentService : IPdfDocumentService
         using (await _gate.EnterAsync(highPriority: true, cancellationToken))
         {
             cancellationToken.ThrowIfCancellationRequested();
-            var document = await Task.Run(() => new PdfDocument(filePath), cancellationToken);
+            var opened = await Task.Run(() =>
+            {
+                var document = new PdfDocument(filePath);
+                IntPtr linkDocument = IntPtr.Zero;
+
+                // Keep a lightweight native handle alongside PDFiumZ's high-level document.
+                // It is used only for annotations/destinations/text-link metadata; page pixels
+                // continue to come exclusively from the existing PDFiumZ rendering pipeline.
+                // Link metadata is best-effort: an interop problem must never make an otherwise
+                // valid PDF unreadable.
+                try
+                {
+                    linkDocument = PdfiumNativeLinks.OpenDocument(filePath);
+                }
+                catch
+                {
+                    linkDocument = IntPtr.Zero;
+                }
+
+                return (Document: document, LinkDocument: linkDocument);
+            }, cancellationToken);
+
+            if (cancellationToken.IsCancellationRequested)
+            {
+                if (opened.LinkDocument != IntPtr.Zero)
+                    PdfiumNativeLinks.CloseDocument(opened.LinkDocument);
+                opened.Document.Dispose();
+                cancellationToken.ThrowIfCancellationRequested();
+            }
+
+            if (_linkDocument != IntPtr.Zero)
+                PdfiumNativeLinks.CloseDocument(_linkDocument);
             _document?.Dispose();
-            _document = document;
+
+            _linkDocument = opened.LinkDocument;
+            _document = opened.Document;
             FilePath = filePath;
         }
     }
@@ -132,6 +168,25 @@ public sealed class PdfiumDocumentService : IPdfDocumentService
         }
     }
 
+    public async Task<IReadOnlyList<PdfLinkInfo>> GetPageLinksAsync(
+        int pageIndex,
+        CancellationToken cancellationToken = default)
+    {
+        using (await _gate.EnterAsync(highPriority: true, cancellationToken))
+        {
+            cancellationToken.ThrowIfCancellationRequested();
+            EnsurePageIndex(pageIndex);
+
+            var linkDocument = _linkDocument;
+            if (linkDocument == IntPtr.Zero)
+                return Array.Empty<PdfLinkInfo>();
+
+            return await Task.Run(
+                () => PdfiumNativeLinks.ReadPageLinks(linkDocument, pageIndex),
+                cancellationToken);
+        }
+    }
+
     private byte[] RenderAtDpi(int pageIndex, float dpi)
     {
         using var page = _document!.Pages[pageIndex];
@@ -154,11 +209,383 @@ public sealed class PdfiumDocumentService : IPdfDocumentService
 
     public void Dispose()
     {
+        if (_linkDocument != IntPtr.Zero)
+        {
+            PdfiumNativeLinks.CloseDocument(_linkDocument);
+            _linkDocument = IntPtr.Zero;
+        }
+
         _document?.Dispose();
         _document = null;
         FilePath = null;
         _gate.Dispose();
     }
+}
+
+internal static class PdfiumNativeLinks
+{
+    private const string LibraryName = "pdfium";
+    private const int DeviceScale = 100_000;
+    private static readonly nuint PdfActionGoTo = 1;
+    private static readonly nuint PdfActionUri = 3;
+
+    [StructLayout(LayoutKind.Sequential)]
+    private struct FsRectF
+    {
+        public float Left;
+        public float Top;
+        public float Right;
+        public float Bottom;
+    }
+
+    public static IntPtr OpenDocument(string filePath)
+    {
+        var document = FPDF_LoadDocument(filePath, IntPtr.Zero);
+        if (document == IntPtr.Zero)
+            throw new InvalidOperationException("PDFium não conseguiu abrir o documento para ler os links.");
+        return document;
+    }
+
+    public static void CloseDocument(IntPtr document)
+    {
+        if (document != IntPtr.Zero)
+            FPDF_CloseDocument(document);
+    }
+
+    public static IReadOnlyList<PdfLinkInfo> ReadPageLinks(IntPtr document, int pageIndex)
+    {
+        var page = FPDF_LoadPage(document, pageIndex);
+        if (page == IntPtr.Zero)
+            return Array.Empty<PdfLinkInfo>();
+
+        try
+        {
+            var links = new List<PdfLinkInfo>();
+            ReadAnnotationLinks(document, page, links);
+            ReadDetectedWebLinks(page, links);
+            return links;
+        }
+        finally
+        {
+            FPDF_ClosePage(page);
+        }
+    }
+
+    private static void ReadAnnotationLinks(IntPtr document, IntPtr page, List<PdfLinkInfo> links)
+    {
+        var position = 0;
+        while (FPDFLink_Enumerate(page, ref position, out var link) != 0 && link != IntPtr.Zero)
+        {
+            if (FPDFLink_GetAnnotRect(link, out var rect) == 0)
+                continue;
+
+            int? targetPage = null;
+            string? uri = null;
+
+            var destination = FPDFLink_GetDest(document, link);
+            if (destination != IntPtr.Zero)
+            {
+                var index = FPDFDest_GetDestPageIndex(document, destination);
+                if (index >= 0)
+                    targetPage = index;
+            }
+            else
+            {
+                var action = FPDFLink_GetAction(link);
+                if (action != IntPtr.Zero)
+                {
+                    var actionType = FPDFAction_GetType(action);
+                    if (actionType == PdfActionGoTo)
+                    {
+                        destination = FPDFAction_GetDest(document, action);
+                        if (destination != IntPtr.Zero)
+                        {
+                            var index = FPDFDest_GetDestPageIndex(document, destination);
+                            if (index >= 0)
+                                targetPage = index;
+                        }
+                    }
+                    else if (actionType == PdfActionUri)
+                    {
+                        uri = ReadActionUri(document, action);
+                    }
+                }
+            }
+
+            if (targetPage is null && string.IsNullOrWhiteSpace(uri))
+                continue;
+
+            if (TryNormalizeRect(page, rect.Left, rect.Top, rect.Right, rect.Bottom,
+                    out var left, out var top, out var right, out var bottom))
+            {
+                AddDistinct(links, new PdfLinkInfo(left, top, right, bottom, targetPage, uri));
+            }
+        }
+    }
+
+    private static void ReadDetectedWebLinks(IntPtr page, List<PdfLinkInfo> links)
+    {
+        var textPage = FPDFText_LoadPage(page);
+        if (textPage == IntPtr.Zero)
+            return;
+
+        try
+        {
+            var webLinks = FPDFLink_LoadWebLinks(textPage);
+            if (webLinks == IntPtr.Zero)
+                return;
+
+            try
+            {
+                var linkCount = FPDFLink_CountWebLinks(webLinks);
+                for (var linkIndex = 0; linkIndex < linkCount; linkIndex++)
+                {
+                    var uri = ReadDetectedUrl(webLinks, linkIndex);
+                    if (string.IsNullOrWhiteSpace(uri))
+                        continue;
+
+                    var rectCount = FPDFLink_CountRects(webLinks, linkIndex);
+                    for (var rectIndex = 0; rectIndex < rectCount; rectIndex++)
+                    {
+                        double left = 0, top = 0, right = 0, bottom = 0;
+                        FPDFLink_GetRect(webLinks, linkIndex, rectIndex, ref left, ref top, ref right, ref bottom);
+
+                        if (TryNormalizeRect(page, left, top, right, bottom,
+                                out var normalizedLeft, out var normalizedTop,
+                                out var normalizedRight, out var normalizedBottom))
+                        {
+                            AddDistinct(links, new PdfLinkInfo(
+                                normalizedLeft,
+                                normalizedTop,
+                                normalizedRight,
+                                normalizedBottom,
+                                null,
+                                uri));
+                        }
+                    }
+                }
+            }
+            finally
+            {
+                FPDFLink_CloseWebLinks(webLinks);
+            }
+        }
+        finally
+        {
+            FPDFText_ClosePage(textPage);
+        }
+    }
+
+    private static bool TryNormalizeRect(
+        IntPtr page,
+        double left,
+        double top,
+        double right,
+        double bottom,
+        out double normalizedLeft,
+        out double normalizedTop,
+        out double normalizedRight,
+        out double normalizedBottom)
+    {
+        var corners = new (double X, double Y)[]
+        {
+            (left, top),
+            (right, top),
+            (right, bottom),
+            (left, bottom)
+        };
+
+        var minX = int.MaxValue;
+        var minY = int.MaxValue;
+        var maxX = int.MinValue;
+        var maxY = int.MinValue;
+
+        foreach (var corner in corners)
+        {
+            if (FPDF_PageToDevice(
+                    page,
+                    0,
+                    0,
+                    DeviceScale,
+                    DeviceScale,
+                    0,
+                    corner.X,
+                    corner.Y,
+                    out var deviceX,
+                    out var deviceY) == 0)
+            {
+                normalizedLeft = normalizedTop = normalizedRight = normalizedBottom = 0;
+                return false;
+            }
+
+            minX = Math.Min(minX, deviceX);
+            minY = Math.Min(minY, deviceY);
+            maxX = Math.Max(maxX, deviceX);
+            maxY = Math.Max(maxY, deviceY);
+        }
+
+        normalizedLeft = Math.Clamp(minX / (double)DeviceScale, 0.0, 1.0);
+        normalizedTop = Math.Clamp(minY / (double)DeviceScale, 0.0, 1.0);
+        normalizedRight = Math.Clamp(maxX / (double)DeviceScale, 0.0, 1.0);
+        normalizedBottom = Math.Clamp(maxY / (double)DeviceScale, 0.0, 1.0);
+
+        return normalizedRight > normalizedLeft && normalizedBottom > normalizedTop;
+    }
+
+    private static void AddDistinct(List<PdfLinkInfo> links, PdfLinkInfo candidate)
+    {
+        const double epsilon = 0.0005;
+        foreach (var existing in links)
+        {
+            if (existing.TargetPageIndex != candidate.TargetPageIndex ||
+                !string.Equals(existing.Uri, candidate.Uri, StringComparison.OrdinalIgnoreCase))
+            {
+                continue;
+            }
+
+            if (Math.Abs(existing.Left - candidate.Left) <= epsilon &&
+                Math.Abs(existing.Top - candidate.Top) <= epsilon &&
+                Math.Abs(existing.Right - candidate.Right) <= epsilon &&
+                Math.Abs(existing.Bottom - candidate.Bottom) <= epsilon)
+            {
+                return;
+            }
+        }
+
+        links.Add(candidate);
+    }
+
+    private static string? ReadActionUri(IntPtr document, IntPtr action)
+    {
+        var required = FPDFAction_GetURIPath(document, action, IntPtr.Zero, 0);
+        if (required <= 1 || required > 1024 * 1024)
+            return null;
+
+        var size = checked((int)required);
+        var buffer = Marshal.AllocHGlobal(size);
+        try
+        {
+            var written = FPDFAction_GetURIPath(document, action, buffer, required);
+            if (written <= 1)
+                return null;
+
+            var bytes = new byte[Math.Max(0, checked((int)written) - 1)];
+            if (bytes.Length > 0)
+                Marshal.Copy(buffer, bytes, 0, bytes.Length);
+            return Encoding.UTF8.GetString(bytes).TrimEnd('\0');
+        }
+        finally
+        {
+            Marshal.FreeHGlobal(buffer);
+        }
+    }
+
+    private static string? ReadDetectedUrl(IntPtr webLinks, int linkIndex)
+    {
+        var required = FPDFLink_GetURL(webLinks, linkIndex, IntPtr.Zero, 0);
+        if (required <= 1 || required > 512 * 1024)
+            return null;
+
+        var buffer = Marshal.AllocHGlobal(required * sizeof(char));
+        try
+        {
+            var written = FPDFLink_GetURL(webLinks, linkIndex, buffer, required);
+            if (written <= 1)
+                return null;
+
+            return Marshal.PtrToStringUni(buffer, written - 1)?.TrimEnd('\0');
+        }
+        finally
+        {
+            Marshal.FreeHGlobal(buffer);
+        }
+    }
+
+    [DllImport(LibraryName, EntryPoint = "FPDF_LoadDocument")]
+    private static extern IntPtr FPDF_LoadDocument(
+        [MarshalAs(UnmanagedType.LPUTF8Str)] string filePath,
+        IntPtr password);
+
+    [DllImport(LibraryName)]
+    private static extern void FPDF_CloseDocument(IntPtr document);
+
+    [DllImport(LibraryName)]
+    private static extern IntPtr FPDF_LoadPage(IntPtr document, int pageIndex);
+
+    [DllImport(LibraryName)]
+    private static extern void FPDF_ClosePage(IntPtr page);
+
+    [DllImport(LibraryName)]
+    private static extern int FPDF_PageToDevice(
+        IntPtr page,
+        int startX,
+        int startY,
+        int sizeX,
+        int sizeY,
+        int rotate,
+        double pageX,
+        double pageY,
+        out int deviceX,
+        out int deviceY);
+
+    [DllImport(LibraryName)]
+    private static extern int FPDFLink_Enumerate(IntPtr page, ref int startPosition, out IntPtr linkAnnotation);
+
+    [DllImport(LibraryName)]
+    private static extern int FPDFLink_GetAnnotRect(IntPtr linkAnnotation, out FsRectF rect);
+
+    [DllImport(LibraryName)]
+    private static extern IntPtr FPDFLink_GetDest(IntPtr document, IntPtr link);
+
+    [DllImport(LibraryName)]
+    private static extern IntPtr FPDFLink_GetAction(IntPtr link);
+
+    [DllImport(LibraryName)]
+    private static extern nuint FPDFAction_GetType(IntPtr action);
+
+    [DllImport(LibraryName)]
+    private static extern IntPtr FPDFAction_GetDest(IntPtr document, IntPtr action);
+
+    [DllImport(LibraryName)]
+    private static extern nuint FPDFAction_GetURIPath(
+        IntPtr document,
+        IntPtr action,
+        IntPtr buffer,
+        nuint bufferLength);
+
+    [DllImport(LibraryName)]
+    private static extern int FPDFDest_GetDestPageIndex(IntPtr document, IntPtr destination);
+
+    [DllImport(LibraryName)]
+    private static extern IntPtr FPDFText_LoadPage(IntPtr page);
+
+    [DllImport(LibraryName)]
+    private static extern void FPDFText_ClosePage(IntPtr textPage);
+
+    [DllImport(LibraryName)]
+    private static extern IntPtr FPDFLink_LoadWebLinks(IntPtr textPage);
+
+    [DllImport(LibraryName)]
+    private static extern int FPDFLink_CountWebLinks(IntPtr linkPage);
+
+    [DllImport(LibraryName)]
+    private static extern int FPDFLink_GetURL(IntPtr linkPage, int linkIndex, IntPtr buffer, int bufferLength);
+
+    [DllImport(LibraryName)]
+    private static extern int FPDFLink_CountRects(IntPtr linkPage, int linkIndex);
+
+    [DllImport(LibraryName)]
+    private static extern void FPDFLink_GetRect(
+        IntPtr linkPage,
+        int linkIndex,
+        int rectIndex,
+        ref double left,
+        ref double top,
+        ref double right,
+        ref double bottom);
+
+    [DllImport(LibraryName)]
+    private static extern void FPDFLink_CloseWebLinks(IntPtr linkPage);
 }
 
 /// <summary>

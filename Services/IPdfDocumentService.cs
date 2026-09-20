@@ -37,4 +37,11 @@ public interface IPdfDocumentService : IDisposable
     /// image lands (no layout jump/flicker while scrolling).
     /// </summary>
     Task<ThumbnailResult> RenderThumbnailAsync(int pageIndex, int maxDimension, CancellationToken cancellationToken = default);
+
+    /// <summary>
+    /// Reads clickable PDF link annotations plus automatically detected web links for a page.
+    /// Bounds are normalized to the unzoomed/unrotated page bitmap so zoom never requires a
+    /// second PDF parse/render pass. Internal destinations are returned as zero-based pages.
+    /// </summary>
+    Task<IReadOnlyList<PdfLinkInfo>> GetPageLinksAsync(int pageIndex, CancellationToken cancellationToken = default);
 }
